@@ -4,6 +4,7 @@ import { GLTFLoader } from 'three/examples/jsm/loaders/GLTFLoader.js';
 import { VRButton } from 'three/examples/jsm/webxr/VRButton.js';
 import { Hands } from '@mediapipe/hands';
 import { Camera as MediaPipeCamera } from '@mediapipe/camera_utils';
+import { PointerLockControls } from 'three/examples/jsm/controls/PointerLockControls.js';
 
 // Mediapipe HAND_CONNECTIONS (관절 연결 정보)
 const HAND_CONNECTIONS = [
@@ -34,8 +35,6 @@ let bossOriginalMaterials = [];
 let bossHitTimer = 0;
 let explosionParticles = [];
 let damageTexts = [];
-let bossHPBar = null;
-let bossHPBarBg = null;
 
 let shakeTime = 0;
 let cameraOriginalPos = null;
@@ -59,6 +58,11 @@ let auroraBallFired = false;
 let lastAuroraGestures = ['', ''];
 let flyingAuroraBalls = [];
 let auroraBallReadyTime = 0;
+
+let dragonMixer; // <--- 전역 선언 추가
+
+let groundY = 0; // 지형 최고점 Y값(전역)
+let landscape = null; // 지형 mesh 전역 참조
 
 // 파티클을 뿜는 클래스
 class FireballEmitter {
@@ -152,18 +156,34 @@ function spawnLightningParticles(position, lightningballId) {
   emitter.emit(position);
 }
 
-init();
-initHandSpheres();
-initMediaPipe();
-animate();
+let prevTime = performance.now();
+let moveForward = false, moveBackward = false, moveLeft = false, moveRight = false;
+const velocity = new THREE.Vector3();
+const direction = new THREE.Vector3();
+const speed = 100.0;
+let isThirdPerson = false;
+let canJump = false;
+let velocityY = 0;
+const gravity = 30; // 중력 가속도
+let player;
+
+function createPlayer() {
+  const geometry = new THREE.BoxGeometry(1, 2, 1);
+  const material = new THREE.MeshStandardMaterial({ color: 0x55ff55, transparent: true, opacity: 0 }); // 완전 투명
+  player = new THREE.Mesh(geometry, material);
+  player.position.set(0, 2, 0);
+  player.castShadow = true;
+  player.receiveShadow = true;
+  scene.add(player);
+}
 
 function init() {
   // Scene
   scene = new THREE.Scene();
-  scene.background = new THREE.Color(0x18132a); // 어두운 보라 밤하늘
+  scene.background = new THREE.Color(0xb3e3ff); // 밝은 하늘색 낮 배경
 
   // Fog
-  scene.fog = new THREE.Fog(0x18132a, 40, 120);
+  scene.fog = new THREE.Fog(0xb3e3ff, 40, 120);
 
   // Camera
   camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 1000);
@@ -181,67 +201,49 @@ function init() {
   document.body.appendChild(VRButton.createButton(renderer));
 
   // Lights
-  const ambientLight = new THREE.AmbientLight(0x442266, 0.7); // 보랏빛
+  const ambientLight = new THREE.AmbientLight(0xffffff, 0.85); // 밝은 흰색
   scene.add(ambientLight);
 
-  const dirLight = new THREE.DirectionalLight(0xaaaaff, 1.2); // 푸른빛
+  const dirLight = new THREE.DirectionalLight(0xffffff, 1.1); // 밝은 태양빛
   dirLight.position.set(20, 30, 10);
   dirLight.castShadow = true;
   dirLight.shadow.mapSize.width = 1024;
   dirLight.shadow.mapSize.height = 1024;
   scene.add(dirLight);
 
-  // Ground
-  const size = 100;
-  const segments = 128;
-  const geometry = new THREE.PlaneGeometry(size, size, segments, segments);
-  geometry.rotateX(-Math.PI / 2);
+  // Ground: minecraft_landscape 5배로 교체
+  const landscapeLoader = new GLTFLoader();
+  landscapeLoader.load('/minecraft_landscape/scene.gltf', (gltf) => {
+    landscape = gltf.scene;
+    landscape.position.set(0, 0, 0);
+    landscape.scale.set(5, 5, 5);
+    scene.add(landscape);
 
-  // 높이 랜덤 + 판타지스러운 패턴
-  const position = geometry.attributes.position;
-  for (let i = 0; i < position.count; i++) {
-    const x = position.getX(i);
-    const z = position.getZ(i);
-    const y =
-      Math.sin(x * 0.15) * Math.cos(z * 0.18) * 1.2 +
-      (Math.random() - 0.5) * 0.7;
-    position.setY(i, y);
-  }
-  geometry.computeVertexNormals();
-
-  // 텍스처 로딩
-  const textureLoader = new THREE.TextureLoader();
-  const grassTexture = textureLoader.load('https://threejs.org/examples/textures/terrain/grasslight-big.jpg');
-  grassTexture.wrapS = grassTexture.wrapT = THREE.RepeatWrapping;
-  grassTexture.repeat.set(20, 20);
-
-  const material = new THREE.MeshStandardMaterial({
-    map: grassTexture,
-    roughness: 0.7,
-    metalness: 0.2,
+    // 지형의 bounding box 계산 후 플레이어를 땅 위로 올림
+    const box = new THREE.Box3().setFromObject(landscape);
+    groundY = box.max.y;
+    if (player) {
+      player.position.set(0, groundY + 1, 0); // 초록색 땅 위에 시작
+    }
   });
-
-  const ground = new THREE.Mesh(geometry, material);
-  ground.receiveShadow = true;
-  scene.add(ground);
 
   // SkyBox (보랏빛 밤하늘)
   const skyGeo = new THREE.SphereGeometry(300, 32, 16);
   const skyMat = new THREE.MeshBasicMaterial({
-    color: 0x2a145a,
+    color: 0xb3e3ff,
     side: THREE.BackSide,
-    transparent: true,
-    opacity: 0.95,
+    transparent: false,
+    opacity: 1.0,
   });
   const sky = new THREE.Mesh(skyGeo, skyMat);
   scene.add(sky);
 
-  // boss.glb 캐릭터 추가
+  // boss.glb 캐릭터 추가 → dragon.glb로 교체
   const loader = new GLTFLoader();
-  loader.load('/boss.glb', (gltf) => {
+  loader.load('/dragon.glb', (gltf) => {
     boss = gltf.scene;
-    boss.position.set(0, 2, 0);
-    boss.scale.set(2, 2, 2);
+    boss.position.set(0, 21, -10); // 하늘에, 기존보다 반만 낮게
+    boss.scale.set(5, 5, 5); // 2배 더 크게
     boss.maxHP = 100;
     boss.currentHP = 100;
     boss.lastHitTime = 0;
@@ -256,41 +258,87 @@ function init() {
     scene.add(boss);
     // boss bounding box
     bossBox = new THREE.Box3().setFromObject(boss);
-
-    // HP바 길이 = boss bounding box width
-    const width = bossBox.max.x - bossBox.min.x;
-    const barY = bossBox.min.y + 1.5;
-    // HP바 배경
-    const barBgGeom = new THREE.PlaneGeometry(width + 0.2, 0.22);
+    // HP바와 배경바 생성 (중앙 anchor, 드래곤 중심 기준)
+    const barWidth = bossBox.max.x - bossBox.min.x;
+    const barHeight = 0.16;
+    const barY = boss.position.y + 3;
+    const barZ = boss.position.z;
+    const barCenter = bossBox.getCenter(new THREE.Vector3()).x;
+    // 배경바 (2% 더 넓게, 중앙 anchor)
+    const barBgGeom = new THREE.PlaneGeometry(barWidth * 1.02, barHeight);
     const barBgMat = new THREE.MeshBasicMaterial({ color: 0x222222, transparent: true, opacity: 0.5 });
-    bossHPBarBg = new THREE.Mesh(barBgGeom, barBgMat);
-    bossHPBarBg.position.set(0, barY, 0);
-    bossHPBarBg.renderOrder = 10;
-    boss.add(bossHPBarBg);
-    // HP바
-    const barGeom = new THREE.PlaneGeometry(width, 0.16);
+    // HP바 (왼쪽 anchor)
+    const barGeom = new THREE.PlaneGeometry(barWidth, barHeight);
+    // 왼쪽 anchor: 모든 vertex x좌표를 +barWidth/2만큼 이동
+    for (let i = 0; i < barGeom.attributes.position.count; i++) {
+      barGeom.attributes.position.setX(i, barGeom.attributes.position.getX(i) + barWidth / 2);
+    }
+    barGeom.attributes.position.needsUpdate = true;
     const barMat = new THREE.MeshBasicMaterial({ color: 0xff4444 });
-    bossHPBar = new THREE.Mesh(barGeom, barMat);
-    bossHPBar.position.set(0, barY, 0.01);
-    bossHPBar.renderOrder = 11;
-    boss.add(bossHPBar);
-    boss.hpBarWidth = width;
-    boss.hpBarY = barY;
+    // fly 애니메이션 적용
+    if (gltf.animations && gltf.animations.length) {
+      dragonMixer = new THREE.AnimationMixer(boss);
+      const flyClip = gltf.animations.find(a => a.name.toLowerCase().includes('fly')) || gltf.animations[0];
+      if (flyClip) {
+        const action = dragonMixer.clipAction(flyClip);
+        action.reset();
+        action.play();
+      }
+    }
   });
 
-  // Controls (데스크탑에서만 활성화)
-  controls = new OrbitControls(camera, renderer.domElement);
-  controls.target.set(0, 0, 0);
-  controls.update();
-
+  // Controls: PointerLockControls (1인칭/3인칭)
+  controls = new PointerLockControls(camera, renderer.domElement);
+  scene.add(controls.getObject());
+  // 플레이어(박스) 생성
+  createPlayer();
   // XR 세션 시작/종료 시 컨트롤 활성화/비활성화
   renderer.xr.addEventListener('sessionstart', () => {
     controls.enabled = false;
-    // setupHandTracking(renderer, scene); // 핸드트래킹 구조 준비 (미구현)
   });
   renderer.xr.addEventListener('sessionend', () => {
     controls.enabled = true;
   });
+  // 클릭 시 포인터락 진입
+  renderer.domElement.addEventListener('click', () => {
+    controls.lock();
+  });
+  // 키 입력 처리
+  const onKeyDown = function (event) {
+    switch (event.code) {
+      case 'ArrowUp':
+      case 'KeyW': moveForward = true; break;
+      case 'ArrowLeft':
+      case 'KeyA': moveLeft = true; break;
+      case 'ArrowDown':
+      case 'KeyS': moveBackward = true; break;
+      case 'ArrowRight':
+      case 'KeyD': moveRight = true; break;
+      case 'Space':
+        if (canJump) {
+          velocityY = 12;
+          canJump = false;
+        }
+        break;
+      case 'KeyC':
+        isThirdPerson = !isThirdPerson;
+        break;
+    }
+  };
+  const onKeyUp = function (event) {
+    switch (event.code) {
+      case 'ArrowUp':
+      case 'KeyW': moveForward = false; break;
+      case 'ArrowLeft':
+      case 'KeyA': moveLeft = false; break;
+      case 'ArrowDown':
+      case 'KeyS': moveBackward = false; break;
+      case 'ArrowRight':
+      case 'KeyD': moveRight = false; break;
+    }
+  };
+  document.addEventListener('keydown', onKeyDown);
+  document.addEventListener('keyup', onKeyUp);
 
   // Resize
   window.addEventListener('resize', () => {
@@ -306,6 +354,45 @@ function init() {
   video.autoplay = true;
   video.playsInline = true;
   document.body.appendChild(video);
+
+  // 노트북 카메라(웹캠) 스트림 연결 및 Mediapipe Hands 초기화
+  navigator.mediaDevices.getUserMedia({ video: true })
+    .then((stream) => {
+      video.srcObject = stream;
+      video.play();
+      initMediaPipe();
+    })
+    .catch((err) => {
+      console.error('카메라 접근 실패:', err);
+      alert('카메라 접근이 거부되었습니다. 브라우저 설정을 확인하세요.');
+    });
+
+  // === 2. Add HTML/CSS for 2D HP bar overlay (ensure it runs on page load) ===
+  if (!document.getElementById('boss-hp-bar-bg')) {
+    const bg = document.createElement('div');
+    bg.id = 'boss-hp-bar-bg';
+    bg.style.position = 'absolute';
+    // 위치는 animate 루프에서 갱신
+    // bg.style.top = '32px';
+    // bg.style.left = '50%';
+    // bg.style.transform = 'translateX(-50%)';
+    bg.style.width = '420px';
+    bg.style.height = '24px';
+    bg.style.background = '#222';
+    bg.style.border = '3px solid #a00';
+    bg.style.borderRadius = '0px';
+    bg.style.zIndex = '1000';
+    bg.style.boxSizing = 'border-box';
+    document.body.appendChild(bg);
+    const bar = document.createElement('div');
+    bar.id = 'boss-hp-bar';
+    bar.style.height = '100%';
+    bar.style.width = '100%';
+    bar.style.background = 'linear-gradient(90deg, #ff4444 60%, #ff8888 100%)';
+    bar.style.borderRadius = '0px';
+    bar.style.transition = 'width 0.2s cubic-bezier(.4,2,.6,1)';
+    bg.appendChild(bar);
+  }
 }
 
 function initHandSpheres() {
@@ -616,11 +703,7 @@ function explodeBoss() {
   }
   // boss, HP바 제거
   scene.remove(boss);
-  if (bossHPBar) scene.remove(bossHPBar);
-  if (bossHPBarBg) scene.remove(bossHPBarBg);
   boss = null;
-  bossHPBar = null;
-  bossHPBarBg = null;
   bossBox = null;
   // 화면 흔들림 효과
   shakeTime = 0.5;
@@ -649,6 +732,8 @@ function auroraColorByTime(t) {
   return new THREE.Color(r, g, b);
 }
 
+// animate 함수 내 카메라/플레이어 이동/점프/중력/땅뚫기/1인칭/3인칭 처리
+const originalAnimate = animate;
 function animate() {
   renderer.setAnimationLoop(() => {
     const accel = 1.015;
@@ -940,11 +1025,10 @@ function animate() {
         state.fireball.velocity.lengthSq() === 0
       ) {
         // fireball 발사
-        if (boss && state.fireball.active) {
-          const from = state.fireball.mesh.position.clone();
-          const to = boss.position.clone();
-          const dir = to.sub(from).normalize();
-          state.fireball.velocity = dir.multiplyScalar(0.15);
+        if (state.fireball.active) {
+          const dir = new THREE.Vector3();
+          camera.getWorldDirection(dir);
+          state.fireball.velocity = dir.normalize().multiplyScalar(0.15);
           state.state = 'fired';
           state.fireball = null;
         }
@@ -1080,11 +1164,10 @@ function animate() {
         state.iceball &&
         state.iceball.velocity.lengthSq() === 0
       ) {
-        if (boss && state.iceball.active) {
-          const from = state.iceball.mesh.position.clone();
-          const to = boss.position.clone();
-          const dir = to.sub(from).normalize();
-          state.iceball.velocity = dir.multiplyScalar(0.15);
+        if (state.iceball.active) {
+          const dir = new THREE.Vector3();
+          camera.getWorldDirection(dir);
+          state.iceball.velocity = dir.normalize().multiplyScalar(0.15);
           state.iceState = 'fired';
           state.iceball = null;
         }
@@ -1120,11 +1203,10 @@ function animate() {
         state.lightningball &&
         state.lightningball.velocity.lengthSq() === 0
       ) {
-        if (boss && state.lightningball.active) {
-          const from = state.lightningball.mesh.position.clone();
-          const to = boss.position.clone();
-          const dir = to.sub(from).normalize();
-          state.lightningball.velocity = dir.multiplyScalar(0.18);
+        if (state.lightningball.active) {
+          const dir = new THREE.Vector3();
+          camera.getWorldDirection(dir);
+          state.lightningball.velocity = dir.normalize().multiplyScalar(0.15);
           state.lightningState = 'fired';
           state.lightningball = null;
         }
@@ -1234,10 +1316,20 @@ function animate() {
       }
     }
     // HP바 업데이트
-    if (bossHPBar && boss && boss.hpBarWidth) {
-      const ratio = Math.max(0, boss.currentHP / boss.maxHP);
-      bossHPBar.scale.x = ratio;
-      bossHPBar.position.x = -(1 - ratio) * boss.hpBarWidth * 0.5;
+    if (boss && document.getElementById('boss-hp-bar')) {
+      const hpRatio = Math.max(0, Math.min(1, boss.currentHP / boss.maxHP));
+      document.getElementById('boss-hp-bar').style.width = (hpRatio * 100) + '%';
+      // === HP바 위치를 드래곤 머리 위로 이동 ===
+      const worldPos = boss.position.clone();
+      worldPos.y += 18; // 머리 위로 7만큼 (더 높이)
+      const vector = worldPos.project(camera);
+      const x = (vector.x * 0.5 + 0.5) * window.innerWidth;
+      const y = (1 - (vector.y * 0.5 + 0.5)) * window.innerHeight;
+      const hpBarBg = document.getElementById('boss-hp-bar-bg');
+      if (hpBarBg) {
+        hpBarBg.style.left = `${x - hpBarBg.offsetWidth / 2}px`;
+        hpBarBg.style.top = `${y - hpBarBg.offsetHeight / 2}px`;
+      }
     }
     updateBlinkMagic();
     // 번쩍임 효과
@@ -1364,7 +1456,91 @@ function animate() {
     }
     gestureDiv.innerText = gestureText;
     renderer.render(scene, camera);
+    // 드래곤 fly 애니메이션 업데이트 및 플레이어(혹은 카메라) 바라보게
+    if (dragonMixer) dragonMixer.update(1/60);
+    if (boss) {
+      const target = player ? player.position : camera.position;
+      boss.lookAt(target.x, target.y + 1, target.z);
+      boss.rotateY(Math.PI); // 꼬리가 보이면 180도 회전
+      // HP바를 월드 좌표에 위치시키고 카메라를 향하게, 거리 기반 크기
+      // (bossHPBar 관련 블록 완전히 삭제)
+    }
   });
+  requestAnimationFrame(animate);
+  const time = performance.now();
+  const delta = (time - prevTime) / 1000;
+  prevTime = time;
+  // 이동 방향
+  direction.z = Number(moveForward) - Number(moveBackward);
+  direction.x = Number(moveRight) - Number(moveLeft);
+  direction.normalize();
+  // 이동 속도
+  velocity.x -= velocity.x * 10.0 * delta;
+  velocity.z -= velocity.z * 10.0 * delta;
+  if (moveForward || moveBackward) velocity.z -= direction.z * speed * delta;
+  if (moveLeft || moveRight) velocity.x -= direction.x * speed * delta;
+  // 플레이어 이동
+  if (player) {
+    // 1인칭/3인칭 모두 카메라(controls.getObject()) 기준 이동
+    const forward = new THREE.Vector3();
+    controls.getDirection(forward); // 카메라가 바라보는 방향
+    forward.y = 0; forward.normalize();
+    const right = new THREE.Vector3();
+    right.crossVectors(forward, new THREE.Vector3(0, 1, 0)).normalize();
+    let moveDir = new THREE.Vector3();
+    if (moveForward) moveDir.add(forward);
+    if (moveBackward) moveDir.sub(forward);
+    if (moveLeft) moveDir.sub(right);
+    if (moveRight) moveDir.add(right);
+    moveDir.normalize();
+    // 기존 속도와 delta를 곱해 너무 빠르지 않게 조정 (speed * delta * 0.5 등으로 조절)
+    player.position.add(moveDir.multiplyScalar(speed * delta * 0.2)); // 더 느리게
+    // 중력 적용
+    velocityY -= gravity * delta;
+    player.position.y += velocityY * delta;
+
+    // Raycaster로 바닥 y값 샘플링
+    let groundAt = groundY;
+    if (landscape) {
+      const raycaster = new THREE.Raycaster();
+      const origin = player.position.clone();
+      origin.y += 2; // 위에서 아래로 쏨
+      raycaster.set(origin, new THREE.Vector3(0, -1, 0));
+      const intersects = raycaster.intersectObject(landscape, true);
+      if (intersects.length > 0) {
+        groundAt = intersects[0].point.y;
+      }
+    }
+    // 바닥보다 아래로 못 내려가게
+    if (player.position.y < groundAt + 1) {
+      player.position.y = groundAt + 1;
+      velocityY = 0;
+      canJump = true;
+    }
+  }
+  // 카메라 위치/시점 처리
+  if (isThirdPerson && player) {
+    // 3인칭: 플레이어 뒤쪽/위에서 따라감
+    const camOffset = new THREE.Vector3(0, 3, 6);
+    camOffset.applyAxisAngle(new THREE.Vector3(0,1,0), controls.getObject().rotation.y);
+    camera.position.copy(player.position).add(camOffset);
+    if (camera.position.y < 2) camera.position.y = 2;
+    camera.lookAt(player.position.x, player.position.y + 1, player.position.z);
+  } else if (player) {
+    // 1인칭: 카메라가 플레이어 머리 위치
+    camera.position.copy(player.position).add(new THREE.Vector3(0, 1.2, 0));
+    if (camera.position.y < 2) camera.position.y = 2;
+    camera.rotation.copy(controls.getObject().rotation);
+  }
+  // controls.getObject() 위치를 항상 player 위치에 맞춤
+  if (player) {
+    controls.getObject().position.copy(player.position).add(new THREE.Vector3(0, 1.2, 0));
+  }
+  // 기존 마법/파티클/이펙트 등은 그대로 유지
+  updateBlinkMagic();
+  updateAuroraMagic();
+  updateHandAuroraEffects();
+  renderer.render(scene, camera);
 }
 
 function updateBlinkMagic() {
@@ -1669,21 +1845,21 @@ function updateHandAuroraEffects() {
     detectGesture(handLandmarks[0]) === 'Open Palm' &&
     detectGesture(handLandmarks[1]) === 'Open Palm'
   ) {
-    if (boss) {
-      const from = handAuroraBall.position.clone();
-      const to = boss.position.clone();
-      const dir = to.sub(from).normalize();
-      const velocity = dir.multiplyScalar(0.19);
-      const flying = createBigAuroraBall(from, handAuroraBall.scale.x);
-      flying.userData = { velocity, active: true };
-      flyingAuroraBalls.push(flying);
-      scene.remove(handAuroraBall);
-      handAuroraBall = null;
-      handAuroraParticles.forEach(p => scene.remove(p.mesh));
-      handAuroraParticles = [];
-      auroraBallFired = true;
-      auroraBallReadyTime = 0;
-    }
+    // 카메라가 바라보는 방향으로 발사
+    const from = handAuroraBall.position.clone();
+    const dir = new THREE.Vector3();
+    camera.getWorldDirection(dir);
+    dir.normalize();
+    const velocity = dir.multiplyScalar(0.19);
+    const flying = createBigAuroraBall(from, handAuroraBall.scale.x);
+    flying.userData = { velocity, active: true };
+    flyingAuroraBalls.push(flying);
+    scene.remove(handAuroraBall);
+    handAuroraBall = null;
+    handAuroraParticles.forEach(p => scene.remove(p.mesh));
+    handAuroraParticles = [];
+    auroraBallFired = true;
+    auroraBallReadyTime = 0;
   }
   // 오로라볼 사라짐 조건: 손이 하나라도 인식 밖이면 즉시 제거
   if (!handLandmarks[0] || !handLandmarks[1]) {
@@ -1763,3 +1939,7 @@ function createSmallAuroraEffectMesh(pos) {
 
 // Mediapipe 랜드마크 시각화용 함수 (CDN)
 // import { drawConnectors, drawLandmarks, HAND_CONNECTIONS } from 'https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js';
+
+// 진입점
+init();
+animate();
