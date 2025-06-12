@@ -64,6 +64,13 @@ let dragonMixer; // <--- 전역 선언 추가
 let groundY = 0; // 지형 최고점 Y값(전역)
 let landscape = null; // 지형 mesh 전역 참조
 
+// === 3D HP bar mesh ===
+let bossHpBarBgMesh = null;
+let bossHpBarMesh = null;
+let barWidth = 20; // HP바 너비 (전역)
+let barHeight = 0.6; // HP바 높이 (전역)
+// let bossHpBarLine = null; // HP바 배경 라인
+
 // 파티클을 뿜는 클래스
 class FireballEmitter {
   constructor(scene, origin, color = 0xff5500) {
@@ -71,7 +78,7 @@ class FireballEmitter {
     this.origin = origin.clone();
     this.particles = [];
     this.alive = true;
-    this.particleGeometry = new THREE.SphereGeometry(0.02, 4, 4);
+    this.particleGeometry = new THREE.BoxGeometry(0.02, 0.02, 0.02); // 네모 파티클
     this.particleMaterial = new THREE.MeshBasicMaterial({ color: color, transparent: true, opacity: 0.7 });
   }
 
@@ -211,12 +218,12 @@ function init() {
   dirLight.shadow.mapSize.height = 1024;
   scene.add(dirLight);
 
-  // Ground: minecraft_landscape 5배로 교체
+  // Ground: minecraft_world 35배로 교체
   const landscapeLoader = new GLTFLoader();
-  landscapeLoader.load('/minecraft_landscape/scene.gltf', (gltf) => {
+  landscapeLoader.load('/minecraft_world/scene.gltf', (gltf) => {
     landscape = gltf.scene;
     landscape.position.set(0, 0, 0);
-    landscape.scale.set(5, 5, 5);
+    landscape.scale.set(35, 35, 35);
     scene.add(landscape);
 
     // 지형의 bounding box 계산 후 플레이어를 땅 위로 올림
@@ -258,23 +265,20 @@ function init() {
     scene.add(boss);
     // boss bounding box
     bossBox = new THREE.Box3().setFromObject(boss);
-    // HP바와 배경바 생성 (중앙 anchor, 드래곤 중심 기준)
-    const barWidth = bossBox.max.x - bossBox.min.x;
-    const barHeight = 0.16;
-    const barY = boss.position.y + 3;
-    const barZ = boss.position.z;
-    const barCenter = bossBox.getCenter(new THREE.Vector3()).x;
-    // 배경바 (2% 더 넓게, 중앙 anchor)
-    const barBgGeom = new THREE.PlaneGeometry(barWidth * 1.02, barHeight);
-    const barBgMat = new THREE.MeshBasicMaterial({ color: 0x222222, transparent: true, opacity: 0.5 });
-    // HP바 (왼쪽 anchor)
+    // HP바와 배경 라인 생성 (보스 머리 위, anchor 중앙)
+    // barWidth, barHeight는 전역 사용
+    // 보스의 머리 위 좌표 계산 (max.y + 약간 위)
+    const bossWorldPos = new THREE.Vector3();
+    boss.getWorldPosition(bossWorldPos);
+    const barY = bossBox.max.y + 8;
+    // HP바 (anchor 중앙)
     const barGeom = new THREE.PlaneGeometry(barWidth, barHeight);
-    // 왼쪽 anchor: 모든 vertex x좌표를 +barWidth/2만큼 이동
-    for (let i = 0; i < barGeom.attributes.position.count; i++) {
-      barGeom.attributes.position.setX(i, barGeom.attributes.position.getX(i) + barWidth / 2);
-    }
-    barGeom.attributes.position.needsUpdate = true;
-    const barMat = new THREE.MeshBasicMaterial({ color: 0xff4444 });
+    const barMat = new THREE.MeshBasicMaterial({ color: 0xff4444, transparent: true, opacity: 0.95 });
+    bossHpBarMesh = new THREE.Mesh(barGeom, barMat);
+    bossHpBarMesh.position.set(bossWorldPos.x, barY, bossWorldPos.z + 0.001);
+    bossHpBarMesh.renderOrder = 1000;
+    bossHpBarMesh.material.depthTest = false;
+    scene.add(bossHpBarMesh);
     // fly 애니메이션 적용
     if (gltf.animations && gltf.animations.length) {
       dragonMixer = new THREE.AnimationMixer(boss);
@@ -366,33 +370,6 @@ function init() {
       console.error('카메라 접근 실패:', err);
       alert('카메라 접근이 거부되었습니다. 브라우저 설정을 확인하세요.');
     });
-
-  // === 2. Add HTML/CSS for 2D HP bar overlay (ensure it runs on page load) ===
-  if (!document.getElementById('boss-hp-bar-bg')) {
-    const bg = document.createElement('div');
-    bg.id = 'boss-hp-bar-bg';
-    bg.style.position = 'absolute';
-    // 위치는 animate 루프에서 갱신
-    // bg.style.top = '32px';
-    // bg.style.left = '50%';
-    // bg.style.transform = 'translateX(-50%)';
-    bg.style.width = '420px';
-    bg.style.height = '24px';
-    bg.style.background = '#222';
-    bg.style.border = '3px solid #a00';
-    bg.style.borderRadius = '0px';
-    bg.style.zIndex = '1000';
-    bg.style.boxSizing = 'border-box';
-    document.body.appendChild(bg);
-    const bar = document.createElement('div');
-    bar.id = 'boss-hp-bar';
-    bar.style.height = '100%';
-    bar.style.width = '100%';
-    bar.style.background = 'linear-gradient(90deg, #ff4444 60%, #ff8888 100%)';
-    bar.style.borderRadius = '0px';
-    bar.style.transition = 'width 0.2s cubic-bezier(.4,2,.6,1)';
-    bg.appendChild(bar);
-  }
 }
 
 function initHandSpheres() {
@@ -540,12 +517,22 @@ function initMediaPipe() {
   cameraUtils.start();
 }
 
+// 모든 마법구와 파티클을 네모, 밝고 투명하게, glow 강조
 function createFireball(position) {
-  const geometry = new THREE.SphereGeometry(0.12, 24, 24);
-  const material = new THREE.MeshStandardMaterial({
-    color: 0xff4500,
-    emissive: 0xff6600,
-    emissiveIntensity: 1.5,
+  // 더 붉은색의 멋진 마법의 구: 입체적이고 각진 IcosahedronGeometry + glow 강조
+  const geometry = new THREE.IcosahedronGeometry(0.16, 2);
+  const material = new THREE.MeshPhysicalMaterial({
+    color: 0xcc2222, // 더 진한 붉은색
+    emissive: 0xff3300, // 강렬한 오렌지빛 발광
+    emissiveIntensity: 3.5,
+    metalness: 0.7,
+    roughness: 0.18,
+    transparent: true,
+    opacity: 0.9,
+    transmission: 0.5,
+    ior: 1.2,
+    clearcoat: 0.5,
+    clearcoatRoughness: 0.13
   });
   const ball = new THREE.Mesh(geometry, material);
   ball.position.copy(position);
@@ -554,13 +541,20 @@ function createFireball(position) {
 }
 
 function createIceball(position) {
-  const geometry = new THREE.SphereGeometry(0.12, 24, 24);
-  const material = new THREE.MeshStandardMaterial({
+  // 멋진 마법의 구: 입체적이고 각진 IcosahedronGeometry + glow 강조, 파랑 테마
+  const geometry = new THREE.IcosahedronGeometry(0.16, 2);
+  const material = new THREE.MeshPhysicalMaterial({
     color: 0x66ccff,
     emissive: 0x66ccff,
-    emissiveIntensity: 2.0,
+    emissiveIntensity: 2.5,
+    metalness: 0.7,
+    roughness: 0.18,
     transparent: true,
     opacity: 0.85,
+    transmission: 0.5,
+    ior: 1.2,
+    clearcoat: 0.5,
+    clearcoatRoughness: 0.15
   });
   const ball = new THREE.Mesh(geometry, material);
   ball.position.copy(position);
@@ -569,19 +563,52 @@ function createIceball(position) {
 }
 
 function createLightningBall(position) {
-  const geometry = new THREE.SphereGeometry(0.14, 32, 32);
-  const material = new THREE.MeshStandardMaterial({
+  // 멋진 마법의 구: 입체적이고 각진 IcosahedronGeometry + glow 강조, 노란/하늘 테마
+  const geometry = new THREE.IcosahedronGeometry(0.18, 2);
+  const material = new THREE.MeshPhysicalMaterial({
     color: 0x99e6ff,
     emissive: 0xffff66,
-    emissiveIntensity: 2.5,
+    emissiveIntensity: 2.8,
+    metalness: 0.7,
+    roughness: 0.18,
     transparent: true,
-    opacity: 0.92,
+    opacity: 0.88,
+    transmission: 0.5,
+    ior: 1.2,
+    clearcoat: 0.5,
+    clearcoatRoughness: 0.15
   });
   const ball = new THREE.Mesh(geometry, material);
   ball.position.copy(position);
   scene.add(ball);
   return { mesh: ball, velocity: new THREE.Vector3(0, 0, 0), active: true };
 }
+
+function createAuroraBall(position) {
+  // 멋진 마법의 구: 입체적이고 각진 IcosahedronGeometry + glow 강조, 오로라 테마
+  const geometry = new THREE.IcosahedronGeometry(0.22, 2);
+  const material = new THREE.MeshPhysicalMaterial({
+    color: 0x99e6ff,
+    emissive: 0x99e6ff,
+    emissiveIntensity: 3.0,
+    metalness: 0.7,
+    roughness: 0.18,
+    transparent: true,
+    opacity: 0.82,
+    transmission: 0.6,
+    ior: 1.3,
+    clearcoat: 0.6,
+    clearcoatRoughness: 0.13
+  });
+  const mesh = new THREE.Mesh(geometry, material);
+  mesh.position.copy(position);
+  mesh.userData.type = 'auroraball';
+  scene.add(mesh);
+  return { mesh, velocity: new THREE.Vector3(0, 0, 0), active: true };
+}
+
+// 이미 파티클/이펙트는 BoxGeometry로 통일되어 있음 (FireballEmitter, spawnExplosionParticles, createAuroraParticle 등)
+// 오로라 이펙트도 BoxGeometry로 유지
 
 // 오른쪽 상단 제스처 표시용 div 추가
 let gestureDiv = document.createElement('div');
@@ -640,7 +667,7 @@ function restoreBossMaterial() {
 
 function spawnExplosionParticles(position, color = 0xffee88, emissive = 0xffaa00) {
   for (let i = 0; i < 18; i++) {
-    const geom = new THREE.SphereGeometry(0.025, 6, 6);
+    const geom = new THREE.BoxGeometry(0.025, 0.025, 0.025); // 네모 파티클
     const mat = new THREE.MeshBasicMaterial({ color: color, emissive: emissive, transparent: true, opacity: 0.95 });
     const mesh = new THREE.Mesh(geom, mat);
     mesh.position.copy(position);
@@ -736,7 +763,9 @@ function auroraColorByTime(t) {
 const originalAnimate = animate;
 function animate() {
   renderer.setAnimationLoop(() => {
-    const accel = 1.015;
+    // Apply acceleration to all magic effects
+    const accel = 1.1; // 가속도를 1.1로 설정
+
     // fireball 이동 (역순 for문)
     for (let idx = fireballs.length - 1; idx >= 0; idx--) {
       const f = fireballs[idx];
@@ -808,6 +837,12 @@ function animate() {
             return true;
           });
         }
+      }
+      // --- fullyCharged 마법구 회전 ---
+      if (f.mesh.userData.fullyCharged && f.mesh.userData.rotationSpeed) {
+        f.mesh.rotation.x += f.mesh.userData.rotationSpeed.x;
+        f.mesh.rotation.y += f.mesh.userData.rotationSpeed.y;
+        f.mesh.rotation.z += f.mesh.userData.rotationSpeed.z;
       }
       // fireball이 존재하면 파티클 계속 생성
       if (f.mesh && f.active) {
@@ -886,6 +921,12 @@ function animate() {
           });
         }
       }
+      // --- fullyCharged 마법구 회전 ---
+      if (f.mesh.userData.fullyCharged && f.mesh.userData.rotationSpeed) {
+        f.mesh.rotation.x += f.mesh.userData.rotationSpeed.x;
+        f.mesh.rotation.y += f.mesh.userData.rotationSpeed.y;
+        f.mesh.rotation.z += f.mesh.userData.rotationSpeed.z;
+      }
       // iceball이 존재하면 파티클 계속 생성
       if (f.mesh && f.active) {
         spawnIceParticles(f.mesh.position, f.mesh.id);
@@ -963,6 +1004,12 @@ function animate() {
           });
         }
       }
+      // --- fullyCharged 마법구 회전 ---
+      if (f.mesh.userData.fullyCharged && f.mesh.userData.rotationSpeed) {
+        f.mesh.rotation.x += f.mesh.userData.rotationSpeed.x;
+        f.mesh.rotation.y += f.mesh.userData.rotationSpeed.y;
+        f.mesh.rotation.z += f.mesh.userData.rotationSpeed.z;
+      }
       // lightningball이 존재하면 파티클 계속 생성
       if (f.mesh && f.active) {
         spawnLightningParticles(f.mesh.position, f.mesh.id);
@@ -1024,11 +1071,20 @@ function animate() {
         state.fireball &&
         state.fireball.velocity.lengthSq() === 0
       ) {
-        // fireball 발사
+        // fullyCharged 판정
         if (state.fireball.active) {
           const dir = new THREE.Vector3();
           camera.getWorldDirection(dir);
           state.fireball.velocity = dir.normalize().multiplyScalar(0.15);
+          // fullyCharged 판정
+          if (state.fireball.mesh.scale.x >= 1.5) {
+            state.fireball.mesh.userData.fullyCharged = true;
+            state.fireball.mesh.userData.rotationSpeed = new THREE.Vector3(
+              Math.random() * 0.2 + 0.1,
+              Math.random() * 0.2 + 0.1,
+              Math.random() * 0.2 + 0.1
+            );
+          }
           state.state = 'fired';
           state.fireball = null;
         }
@@ -1127,7 +1183,7 @@ function animate() {
         // follow 중일 때 서서히 커지게
         const maxScale = 1.5;
         if (state.fireball.mesh.scale.x < maxScale) {
-          state.fireball.mesh.scale.multiplyScalar(1.005);
+          state.fireball.mesh.scale.multiplyScalar(1.0065);
           if (state.fireball.mesh.scale.x > maxScale) {
             state.fireball.mesh.scale.set(maxScale, maxScale, maxScale);
           }
@@ -1151,7 +1207,7 @@ function animate() {
         // follow 중일 때 서서히 커지게
         const maxScale = 1.5;
         if (state.iceball.mesh.scale.x < maxScale) {
-          state.iceball.mesh.scale.multiplyScalar(1.005);
+          state.iceball.mesh.scale.multiplyScalar(1.0065);
           if (state.iceball.mesh.scale.x > maxScale) {
             state.iceball.mesh.scale.set(maxScale, maxScale, maxScale);
           }
@@ -1168,6 +1224,15 @@ function animate() {
           const dir = new THREE.Vector3();
           camera.getWorldDirection(dir);
           state.iceball.velocity = dir.normalize().multiplyScalar(0.15);
+          // fullyCharged 판정
+          if (state.iceball.mesh.scale.x >= 1.5) {
+            state.iceball.mesh.userData.fullyCharged = true;
+            state.iceball.mesh.userData.rotationSpeed = new THREE.Vector3(
+              Math.random() * 0.2 + 0.1,
+              Math.random() * 0.2 + 0.1,
+              Math.random() * 0.2 + 0.1
+            );
+          }
           state.iceState = 'fired';
           state.iceball = null;
         }
@@ -1190,7 +1255,7 @@ function animate() {
         // follow 중일 때 서서히 커지게
         const maxScale = 1.7;
         if (state.lightningball.mesh.scale.x < maxScale) {
-          state.lightningball.mesh.scale.multiplyScalar(1.005);
+          state.lightningball.mesh.scale.multiplyScalar(1.0065);
           if (state.lightningball.mesh.scale.x > maxScale) {
             state.lightningball.mesh.scale.set(maxScale, maxScale, maxScale);
           }
@@ -1207,6 +1272,15 @@ function animate() {
           const dir = new THREE.Vector3();
           camera.getWorldDirection(dir);
           state.lightningball.velocity = dir.normalize().multiplyScalar(0.15);
+          // fullyCharged 판정
+          if (state.lightningball.mesh.scale.x >= 1.7) {
+            state.lightningball.mesh.userData.fullyCharged = true;
+            state.lightningball.mesh.userData.rotationSpeed = new THREE.Vector3(
+              Math.random() * 0.2 + 0.1,
+              Math.random() * 0.2 + 0.1,
+              Math.random() * 0.2 + 0.1
+            );
+          }
           state.lightningState = 'fired';
           state.lightningball = null;
         }
@@ -1315,21 +1389,24 @@ function animate() {
         damageTexts.splice(i, 1);
       }
     }
-    // HP바 업데이트
-    if (boss && document.getElementById('boss-hp-bar')) {
+    // 3D HP바 업데이트 (보스 머리 위)
+    if (boss && bossHpBarMesh && bossBox) {
+      // HP 비율
       const hpRatio = Math.max(0, Math.min(1, boss.currentHP / boss.maxHP));
-      document.getElementById('boss-hp-bar').style.width = (hpRatio * 100) + '%';
-      // === HP바 위치를 드래곤 머리 위로 이동 ===
-      const worldPos = boss.position.clone();
-      worldPos.y += 18; // 머리 위로 7만큼 (더 높이)
-      const vector = worldPos.project(camera);
-      const x = (vector.x * 0.5 + 0.5) * window.innerWidth;
-      const y = (1 - (vector.y * 0.5 + 0.5)) * window.innerHeight;
-      const hpBarBg = document.getElementById('boss-hp-bar-bg');
-      if (hpBarBg) {
-        hpBarBg.style.left = `${x - hpBarBg.offsetWidth / 2}px`;
-        hpBarBg.style.top = `${y - hpBarBg.offsetHeight / 2}px`;
-      }
+      // HP바 스케일
+      bossHpBarMesh.scale.x = Math.max(0.01, hpRatio);
+      // 보스의 머리 위 좌표 계산 (max.y + 약간 위)
+      const bossWorldPos = new THREE.Vector3();
+      boss.getWorldPosition(bossWorldPos);
+      // barWidth는 전역 사용
+      const barY = bossBox.max.y + 8;
+      // HP바 position.x를 항상 같게!
+      bossHpBarMesh.position.set(bossWorldPos.x, barY, bossWorldPos.z);
+      // 카메라를 향하도록 (수평 회전만 적용)
+      const dx = camera.position.x - bossHpBarMesh.position.x;
+      const dz = camera.position.z - bossHpBarMesh.position.z;
+      const rotY = Math.atan2(dx, dz);
+      bossHpBarMesh.rotation.set(0, rotY, 0);
     }
     updateBlinkMagic();
     // 번쩍임 효과
@@ -1408,7 +1485,7 @@ function animate() {
       const ball = flyingAuroraBalls[i];
       if (ball.userData.active) {
         // 가속도 적용
-        ball.userData.velocity.multiplyScalar(1.015);
+        ball.userData.velocity.multiplyScalar(accel); // accel = 1.1 적용
         ball.position.add(ball.userData.velocity);
         // 색상 변화
         const t = performance.now() * 0.00025 + i * 0.1;
@@ -1460,10 +1537,9 @@ function animate() {
     if (dragonMixer) dragonMixer.update(1/60);
     if (boss) {
       const target = player ? player.position : camera.position;
-      boss.lookAt(target.x, target.y + 1, target.z);
-      boss.rotateY(Math.PI); // 꼬리가 보이면 180도 회전
-      // HP바를 월드 좌표에 위치시키고 카메라를 향하게, 거리 기반 크기
-      // (bossHPBar 관련 블록 완전히 삭제)
+      const fixedY = 21; // 드래곤 y값 고정
+      boss.lookAt(target.x, fixedY + 1, target.z);
+      boss.rotateY(Math.PI);
     }
   });
   requestAnimationFrame(animate);
@@ -1611,19 +1687,65 @@ function clearBlinkEffect() {
 }
 
 function triggerBlinkTeleport() {
-  if (!boss) return;
-  // boss 위치 기준 반경 7~11로 랜덤 위치
-  const center = new THREE.Vector3();
-  boss.getWorldPosition(center);
-  const theta = Math.random() * Math.PI * 2;
-  const radius = 7 + Math.random() * 4;
-  const x = center.x + Math.cos(theta) * radius;
-  const z = center.z + Math.sin(theta) * radius;
-  const y = center.y + 1.5; // 약간 위
+  // 맵 전체에서 랜덤 위치 찾기 (최대 20회 시도)
+  let found = false;
+  let x, y, z;
+  if (landscape) {
+    const box = new THREE.Box3().setFromObject(landscape);
+    for (let attempt = 0; attempt < 20; attempt++) {
+      x = box.min.x + Math.random() * (box.max.x - box.min.x);
+      z = box.min.z + Math.random() * (box.max.z - box.min.z);
+      // Raycaster로 해당 (x, z) 위치의 땅 높이(y) 구하기
+      const rayOrigin = new THREE.Vector3(x, 1000, z);
+      const raycaster = new THREE.Raycaster(rayOrigin, new THREE.Vector3(0, -1, 0));
+      const intersects = raycaster.intersectObject(landscape, true);
+      if (intersects.length > 0) {
+        y = intersects[0].point.y + 1.5;
+        // 장애물 체크: boss와 너무 가까운지, 혹은 다른 mesh와 겹치는지 등
+        let isBlocked = false;
+        if (boss) {
+          const bossPos = new THREE.Vector3();
+          boss.getWorldPosition(bossPos);
+          if (new THREE.Vector3(x, y, z).distanceTo(bossPos) < 3) isBlocked = true;
+        }
+        // 추가 장애물 체크 필요시 여기에
+        if (!isBlocked) {
+          found = true;
+          break;
+        }
+      }
+    }
+  }
+  // 못 찾으면 기존 보스 주변 랜덤 위치 fallback
+  if (!found && boss) {
+    const center = new THREE.Vector3();
+    boss.getWorldPosition(center);
+    const theta = Math.random() * Math.PI * 2;
+    const radius = 7 + Math.random() * 4;
+    x = center.x + Math.cos(theta) * radius;
+    z = center.z + Math.sin(theta) * radius;
+    y = center.y + 1.5;
+    if (landscape) {
+      const rayOrigin = new THREE.Vector3(x, 1000, z);
+      const raycaster = new THREE.Raycaster(rayOrigin, new THREE.Vector3(0, -1, 0));
+      const intersects = raycaster.intersectObject(landscape, true);
+      if (intersects.length > 0) {
+        y = intersects[0].point.y + 1.5;
+      }
+    }
+  }
   // 카메라 번쩍임 효과
   blinkFlash = 0.18;
   camera.position.set(x, y, z);
-  camera.lookAt(center.x, center.y + 1, center.z);
+  if (boss) {
+    const center = new THREE.Vector3();
+    boss.getWorldPosition(center);
+    camera.lookAt(center.x, center.y + 1, center.z);
+    if (player) {
+      player.position.set(x, y, z);
+      player.lookAt(center.x, center.y + 1, center.z);
+    }
+  }
   clearBlinkEffect();
   blinkCooldown = 5.0;
 }
@@ -1695,7 +1817,7 @@ function updateAuroraMagic() {
 }
 
 function createAuroraEffectMesh(pos) {
-  const geom = new THREE.SphereGeometry(0.055, 18, 18);
+  const geom = new THREE.BoxGeometry(0.055, 0.055, 0.055);
   const mat = new THREE.MeshBasicMaterial({ color: 0x99e6ff, transparent: true, opacity: 0.8 });
   const mesh = new THREE.Mesh(geom, mat);
   mesh.position.copy(pos);
@@ -1720,15 +1842,15 @@ function clearAuroraEffect() {
 
 function triggerAuroraSkill(mid) {
   // 오로라볼 생성
-  const geom = new THREE.SphereGeometry(0.18, 32, 32);
-  const mat = new THREE.MeshPhysicalMaterial({ color: 0x99e6ff, emissive: 0x9933ff, roughness: 0.2, metalness: 0.7, transparent: true, opacity: 0.92, transmission: 0.7, ior: 1.4 });
+  const geom = new THREE.BoxGeometry(0.18, 0.18, 0.18);
+  const mat = new THREE.MeshPhysicalMaterial({ color: 0x99e6ff, emissive: 0x99e6ff, emissiveIntensity: 2.5 });
   const mesh = new THREE.Mesh(geom, mat);
   mesh.position.copy(mid);
   scene.add(mesh);
   auroraState.auroraBall = { mesh };
   // 오로라 파티클 생성
   for (let i = 0; i < 36; i++) {
-    const pgeom = new THREE.SphereGeometry(0.035, 8, 8);
+    const pgeom = new THREE.BoxGeometry(0.035, 0.035, 0.035);
     const auroraColors = [0x99e6ff, 0x9933ff, 0x33ffcc, 0x66ff99];
     const color = auroraColors[Math.floor(Math.random() * auroraColors.length)];
     const pmat = new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.85 });
@@ -1875,31 +1997,9 @@ function updateHandAuroraEffects() {
   lastAuroraGestures = gestures;
 }
 
-function createBigAuroraBall(pos, scale) {
-  const geom = new THREE.SphereGeometry(1, 32, 32);
-  const mat = new THREE.MeshPhysicalMaterial({
-    color: 0x99e6ff,
-    emissive: 0x9933ff,
-    emissiveIntensity: 2.2,
-    roughness: 0.18,
-    metalness: 0.7,
-    transparent: true,
-    opacity: 0.82,
-    transmission: 0.7,
-    ior: 1.4,
-    clearcoat: 0.6,
-    clearcoatRoughness: 0.2
-  });
-  const mesh = new THREE.Mesh(geom, mat);
-  mesh.position.copy(pos);
-  mesh.scale.set(scale, scale, scale);
-  scene.add(mesh);
-  return mesh;
-}
-
 function createAuroraParticle(center, scale) {
   // 더 강렬한 컬러와 glow, 크기, 속도, 투명도 랜덤
-  const geom = new THREE.SphereGeometry(0.03 + Math.random() * 0.04 * scale, 12, 12);
+  const geom = new THREE.BoxGeometry(0.03 + Math.random() * 0.04 * scale, 0.03 + Math.random() * 0.04 * scale, 0.03 + Math.random() * 0.04 * scale);
   const auroraColors = [0x99e6ff, 0x9933ff, 0x33ffcc, 0x66ff99, 0xffe066, 0xff66cc, 0x66ffd9, 0xffffff];
   const color = auroraColors[Math.floor(Math.random() * auroraColors.length)];
   const mat = new THREE.MeshPhysicalMaterial({
@@ -1929,7 +2029,7 @@ function createAuroraParticle(center, scale) {
 }
 
 function createSmallAuroraEffectMesh(pos) {
-  const geom = new THREE.SphereGeometry(0.06, 18, 18);
+  const geom = new THREE.BoxGeometry(0.06, 0.06, 0.06);
   const mat = new THREE.MeshBasicMaterial({ color: 0x99e6ff, transparent: true, opacity: 0.7 });
   const mesh = new THREE.Mesh(geom, mat);
   mesh.position.copy(pos);
@@ -1943,3 +2043,27 @@ function createSmallAuroraEffectMesh(pos) {
 // 진입점
 init();
 animate();
+
+// createBigAuroraBall를 createFireball 등과 같은 위치(상단)로 이동
+function createBigAuroraBall(pos, scale) {
+  // 멋진 마법의 구: 입체적이고 각진 IcosahedronGeometry + glow 강조, 오로라 테마
+  const geom = new THREE.IcosahedronGeometry(1, 2);
+  const mat = new THREE.MeshPhysicalMaterial({
+    color: 0x99e6ff,
+    emissive: 0x9933ff,
+    emissiveIntensity: 3.2,
+    roughness: 0.18,
+    metalness: 0.7,
+    transparent: true,
+    opacity: 0.82,
+    transmission: 0.7,
+    ior: 1.4,
+    clearcoat: 0.6,
+    clearcoatRoughness: 0.2
+  });
+  const mesh = new THREE.Mesh(geom, mat);
+  mesh.position.copy(pos);
+  mesh.scale.set(scale, scale, scale);
+  scene.add(mesh);
+  return mesh;
+}
