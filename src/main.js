@@ -173,6 +173,103 @@ let canJump = false;
 let velocityY = 0;
 const gravity = 30; // 중력 가속도
 let player;
+let shieldMesh = null;
+
+// === [플레이어 HP 시스템 추가] ===
+let playerHP = 100;
+let playerMaxHP = 100;
+let playerHpBarMesh = null;
+let playerHpBarBgMesh = null;
+let isPlayerDead = false;
+
+// === [플레이어 피격 임팩트 변수 전역 선언] ===
+let playerHitFlash = 0;
+let playerShakeTime = 0;
+let shakeOffset = { x: 0, y: 0, z: 0 };
+
+function createPlayerHpBar() {
+  if (!player) return;
+  // HP바 배경
+  const bgGeom = new THREE.PlaneGeometry(2.2, 0.18);
+  const bgMat = new THREE.MeshBasicMaterial({ color: 0x222222, transparent: true, opacity: 0.7 });
+  playerHpBarBgMesh = new THREE.Mesh(bgGeom, bgMat);
+  playerHpBarBgMesh.position.set(0, 2.5, 0);
+  playerHpBarBgMesh.renderOrder = 1000;
+  playerHpBarBgMesh.material.depthTest = false;
+  player.add(playerHpBarBgMesh);
+  // HP바
+  const barGeom = new THREE.PlaneGeometry(2, 0.12);
+  const barMat = new THREE.MeshBasicMaterial({ color: 0x55ff55, transparent: true, opacity: 0.95 });
+  playerHpBarMesh = new THREE.Mesh(barGeom, barMat);
+  playerHpBarMesh.position.set(0, 2.5, 0.01);
+  playerHpBarMesh.renderOrder = 1001;
+  playerHpBarMesh.material.depthTest = false;
+  player.add(playerHpBarMesh);
+}
+
+function updatePlayerHpBar() {
+  if (!playerHpBarMesh) return;
+  const hpRatio = Math.max(0, Math.min(1, playerHP / playerMaxHP));
+  playerHpBarMesh.scale.x = Math.max(0.01, hpRatio);
+}
+
+function damagePlayer(amount, pos) {
+  if (isPlayerDead) return;
+  playerHP -= amount;
+  if (playerHP < 0) playerHP = 0;
+  updatePlayerHpBar();
+  spawnPlayerDamageText(pos || player.position, amount);
+  triggerPlayerHitEffect();
+  // [임팩트] 화면 흔들림, 붉은 번쩍임
+  playerShakeTime = 0.38; // 더 길고 강하게
+  playerHitFlash = 0.18;
+  if (playerHP <= 0) {
+    isPlayerDead = true;
+    onPlayerDeath();
+  }
+}
+
+function spawnPlayerDamageText(position, value = 10) {
+  // 텍스트를 그린 canvas texture sprite
+  const canvas = document.createElement('canvas');
+  canvas.width = 256;
+  canvas.height = 128;
+  const ctx = canvas.getContext('2d');
+  ctx.font = 'bold 80px Arial';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.shadowColor = '#ff0033';
+  ctx.shadowBlur = 16;
+  ctx.fillStyle = '#fff';
+  ctx.fillText('-' + value.toString(), 128, 64);
+  ctx.strokeStyle = '#ff0033';
+  ctx.lineWidth = 8;
+  ctx.strokeText('-' + value.toString(), 128, 64);
+  const texture = new THREE.CanvasTexture(canvas);
+  const material = new THREE.SpriteMaterial({ map: texture, transparent: true });
+  const sprite = new THREE.Sprite(material);
+  sprite.position.copy(position);
+  sprite.position.y += 2.7;
+  sprite.scale.set(2.2, 1.1, 1); // [더 크고 튀게]
+  scene.add(sprite);
+  damageTexts.push({ sprite, time: 0 });
+}
+
+function triggerPlayerHitEffect() {
+  if (!player) return;
+  player.material.color.set(0xff3333);
+  if (playerHpBarMesh) playerHpBarMesh.material.color.set(0xff3333);
+  setTimeout(() => {
+    if (player) player.material.color.set(0x55ff55);
+    if (playerHpBarMesh) playerHpBarMesh.material.color.set(0x55ff55);
+  }, 180);
+}
+
+function onPlayerDeath() {
+  // 간단한 게임 오버 처리
+  alert('플레이어가 쓰러졌습니다!');
+  // TODO: 리스폰, 재시작 등 추가 가능
+}
 
 function createPlayer() {
   const geometry = new THREE.BoxGeometry(1, 2, 1);
@@ -182,6 +279,7 @@ function createPlayer() {
   player.castShadow = true;
   player.receiveShadow = true;
   scene.add(player);
+  createPlayerHpBar();
 }
 
 function init() {
@@ -293,7 +391,7 @@ function init() {
 
   // Controls: PointerLockControls (1인칭/3인칭)
   controls = new PointerLockControls(camera, renderer.domElement);
-  scene.add(controls.getObject());
+  scene.add(controls.object);
   // 플레이어(박스) 생성
   createPlayer();
   // XR 세션 시작/종료 시 컨트롤 활성화/비활성화
@@ -1541,6 +1639,65 @@ function animate() {
       boss.lookAt(target.x, fixedY + 1, target.z);
       boss.rotateY(Math.PI);
     }
+    // === [보스 파이어볼 이동/충돌/데미지 처리] ===
+    for (let i = bossProjectiles.length - 1; i >= 0; i--) {
+      const f = bossProjectiles[i];
+      if (!f.mesh) continue;
+      f.mesh.position.add(f.velocity);
+      // 실드 우선 판정
+      let hit = false;
+      if (shieldMesh && player) {
+        const shieldBox = new THREE.Box3().setFromObject(shieldMesh);
+        if (shieldBox.containsPoint(f.mesh.position)) {
+          // 실드 이펙트
+          spawnExplosionParticles(f.mesh.position, 0x33ccff, 0x99e6ff);
+          scene.remove(f.mesh);
+          bossProjectiles.splice(i, 1);
+          hit = true;
+        }
+      }
+      if (!hit && player) {
+        const playerBox = new THREE.Box3().setFromObject(player);
+        if (playerBox.containsPoint(f.mesh.position)) {
+          damagePlayer(15, f.mesh.position);
+          spawnExplosionParticles(f.mesh.position, 0xff5500, 0xff2200);
+          scene.remove(f.mesh);
+          bossProjectiles.splice(i, 1);
+          hit = true;
+        }
+      }
+      // 너무 멀리 가면 제거
+      if (!hit && f.mesh.position.distanceTo(boss.position) > 120) {
+        scene.remove(f.mesh);
+        bossProjectiles.splice(i, 1);
+      }
+    }
+    // === [보스 공격 타이머] ===
+    if (boss && player && !isPlayerDead) {
+      bossAttackTimer += renderer.xr.isPresenting ? 1/72 : 1/60;
+      if (bossAttackTimer > bossAttackInterval) {
+        spawnBossFireball();
+        bossAttackTimer = 0;
+        bossAttackInterval = 1.2 + Math.random() * 1.6; // 다음 간격(1.2~2.8초)
+      }
+    }
+    updatePlayerHpBar();
+    // === [플레이어 피격 임팩트: 화면 흔들림/플래시] ===
+    if (playerShakeTime > 0) {
+      playerShakeTime -= renderer.xr.isPresenting ? 1/72 : 1/60;
+      // 랜덤 방향으로 강하게 흔들림, 점차 줄어듦
+      const intensity = playerShakeTime * 1.2;
+      camera.position.x += Math.sin(performance.now() * 60) * shakeOffset.x * intensity;
+      camera.position.y += Math.cos(performance.now() * 60) * shakeOffset.y * intensity;
+      camera.position.z += Math.sin(performance.now() * 40) * shakeOffset.z * intensity * 0.5;
+    }
+    if (playerHitFlash > 0) {
+      playerHitFlash -= renderer.xr.isPresenting ? 1/72 : 1/60;
+      renderer.setClearColor(0xff0033, Math.min(1, playerHitFlash * 6));
+      if (playerHitFlash <= 0) {
+        renderer.setClearColor(0x18132a, 1);
+      }
+    }
   });
   requestAnimationFrame(animate);
   const time = performance.now();
@@ -1598,7 +1755,7 @@ function animate() {
   if (isThirdPerson && player) {
     // 3인칭: 플레이어 뒤쪽/위에서 따라감
     const camOffset = new THREE.Vector3(0, 3, 6);
-    camOffset.applyAxisAngle(new THREE.Vector3(0,1,0), controls.getObject().rotation.y);
+    camOffset.applyAxisAngle(new THREE.Vector3(0,1,0), controls.object.rotation.y);
     camera.position.copy(player.position).add(camOffset);
     if (camera.position.y < 2) camera.position.y = 2;
     camera.lookAt(player.position.x, player.position.y + 1, player.position.z);
@@ -1606,17 +1763,34 @@ function animate() {
     // 1인칭: 카메라가 플레이어 머리 위치
     camera.position.copy(player.position).add(new THREE.Vector3(0, 1.2, 0));
     if (camera.position.y < 2) camera.position.y = 2;
-    camera.rotation.copy(controls.getObject().rotation);
+    camera.rotation.copy(controls.object.rotation);
   }
   // controls.getObject() 위치를 항상 player 위치에 맞춤
   if (player) {
-    controls.getObject().position.copy(player.position).add(new THREE.Vector3(0, 1.2, 0));
+    controls.object.position.copy(player.position).add(new THREE.Vector3(0, 1.2, 0));
   }
   // 기존 마법/파티클/이펙트 등은 그대로 유지
   updateBlinkMagic();
   updateAuroraMagic();
   updateHandAuroraEffects();
   renderer.render(scene, camera);
+
+  // === 실드: 양손 모두 Open Palm일 때만 표시 ===
+  // console.log('손0:', handLandmarks[0] ? detectGesture(handLandmarks[0]) : '없음', '손1:', handLandmarks[1] ? detectGesture(handLandmarks[1]) : '없음', 'player:', !!player, 'shieldMesh:', !!shieldMesh);
+  let bothOpenPalm = false;
+  if (handLandmarks[0] && handLandmarks[1]) {
+    const g0 = detectGesture(handLandmarks[0]);
+    const g1 = detectGesture(handLandmarks[1]);
+    bothOpenPalm = (g0 === 'Open Palm' && g1 === 'Open Palm');
+  }
+  if (bothOpenPalm) {
+    tryCreateShield();
+    if (shieldMesh && player) {
+      shieldMesh.position.copy(player.position);
+    }
+  } else {
+    tryRemoveShield();
+  }
 }
 
 function updateBlinkMagic() {
@@ -2066,4 +2240,65 @@ function createBigAuroraBall(pos, scale) {
   mesh.scale.set(scale, scale, scale);
   scene.add(mesh);
   return mesh;
+}
+
+function createShield() {
+  // 플레이어를 감싸는 파란색 투명 구체
+  const geometry = new THREE.SphereGeometry(1.3, 48, 32);
+  const material = new THREE.MeshPhysicalMaterial({
+    color: 0x33ccff, // 밝은 파랑
+    transparent: true,
+    opacity: 0.32,
+    metalness: 0.2,
+    roughness: 0.08,
+    transmission: 0.85, // 유리 느낌
+    thickness: 0.5,
+    ior: 1.3,
+    clearcoat: 0.7,
+    clearcoatRoughness: 0.1,
+    side: THREE.DoubleSide,
+    depthWrite: false,
+  });
+  const mesh = new THREE.Mesh(geometry, material);
+  mesh.renderOrder = 999;
+  return mesh;
+}
+
+function tryCreateShield() {
+  if (!shieldMesh && player) {
+    shieldMesh = createShield();
+    shieldMesh.position.copy(player.position);
+    scene.add(shieldMesh);
+    console.log('실드 생성!');
+  }
+}
+
+function tryRemoveShield() {
+  if (shieldMesh) {
+    scene.remove(shieldMesh);
+    shieldMesh.geometry.dispose();
+    shieldMesh.material.dispose();
+    shieldMesh = null;
+  }
+}
+
+// === [보스 마법 공격: 플레이어 향해 파이어볼 발사] ===
+let bossAttackTimer = 0;
+let bossAttackInterval = 2.0 + Math.random() * 0.8; // 최초 간격(1.2~2.8)
+let bossProjectiles = [];
+
+function spawnBossFireball() {
+  if (!boss || isPlayerDead) return;
+  // 보스 위치에서 플레이어 위치로 향하는 파이어볼
+  const start = new THREE.Vector3();
+  boss.getWorldPosition(start);
+  const end = player.position.clone();
+  const dir = end.clone().sub(start).normalize();
+  const fireball = createFireball(start.clone().add(dir.clone().multiplyScalar(3)));
+  fireball.mesh.material.color.set(0xff5500);
+  fireball.mesh.material.emissive.set(0xff2200);
+  fireball.mesh.scale.set(1.2, 1.2, 1.2);
+  fireball.velocity = dir.multiplyScalar(1.2); // [속도 상향: 1.2]
+  fireball.isBossProjectile = true;
+  bossProjectiles.push(fireball);
 }
