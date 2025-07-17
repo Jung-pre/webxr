@@ -1924,6 +1924,9 @@ function animate() {
     // FPS 측정 업데이트
     updateFPS();
     
+    // 보스 성능 최적화를 위한 deltaTime 계산
+    const deltaTime = renderer.xr.isPresenting ? 1/72 : 1/60;
+    
     // Apply acceleration to all magic effects
     const accel = 1.1; // 가속도를 1.1로 설정
 
@@ -2734,8 +2737,8 @@ function animate() {
     }
     gestureDiv.innerText = gestureText;
     renderer.render(scene, camera);
+    
     // 드래곤 fly 애니메이션 업데이트 최적화 (30fps로 제한)
-    const deltaTime = renderer.xr.isPresenting ? 1/72 : 1/60;
     bossAnimationUpdateTimer += deltaTime;
     if (bossAnimationUpdateTimer >= BOSS_ANIMATION_UPDATE_INTERVAL) {
       if (dragonMixer) dragonMixer.update(bossAnimationUpdateTimer);
