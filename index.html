@@ -309,7 +309,117 @@
         border-color: #999;
         transform: translateY(-2px);
       }
+      
+      /* 성능 모니터링 프레임 스타일 */
+      #performance-monitor {
+        position: fixed;
+        bottom: 20px;
+        right: 20px;
+        width: 280px;
+        background: rgba(0, 0, 0, 0.85);
+        border: 2px solid #555;
+        border-radius: 8px;
+        font-family: 'Press Start 2P', monospace;
+        font-size: 10px;
+        color: #fff;
+        z-index: 10000;
+        padding: 12px;
+        box-shadow: 0 4px 20px rgba(0, 0, 0, 0.6);
+        backdrop-filter: blur(5px);
+      }
+      
+      .perf-title {
+        text-align: center;
+        margin-bottom: 10px;
+        color: #4CAF50;
+        font-size: 11px;
+        text-shadow: 0 0 5px #4CAF50;
+      }
+      
+      .perf-content {
+        margin-bottom: 8px;
+      }
+      
+      .perf-item {
+        display: flex;
+        justify-content: space-between;
+        margin-bottom: 6px;
+        padding: 4px 0;
+        border-bottom: 1px solid #333;
+      }
+      
+      .perf-item:last-child {
+        border-bottom: none;
+        margin-bottom: 0;
+      }
+      
+      .perf-label {
+        color: #ccc;
+      }
+      
+      .perf-value {
+        color: #4CAF50;
+        font-weight: bold;
+        text-shadow: 0 0 3px #4CAF50;
+      }
+      
+      .perf-controls {
+        border-top: 1px solid #555;
+        padding-top: 8px;
+        margin-top: 8px;
+      }
+      
+      .perf-help {
+        font-size: 8px;
+        color: #888;
+        text-align: center;
+        line-height: 12px;
+      }
+      
+      /* 반응형 - 작은 화면에서는 크기 조정 */
+      @media (max-width: 768px) {
+        #performance-monitor {
+          width: 240px;
+          font-size: 9px;
+          bottom: 10px;
+          right: 10px;
+        }
+        
+        .perf-title {
+          font-size: 10px;
+        }
+        
+        .perf-help {
+          font-size: 7px;
+        }
+      }
     </style>
+    <!-- 성능 모니터링 프레임 -->
+    <div id="performance-monitor">
+      <div class="perf-title">성능 모니터</div>
+      <div class="perf-content">
+        <div class="perf-item">
+          <span class="perf-label">FPS:</span>
+          <span class="perf-value" id="fps-value">--</span>
+        </div>
+        <div class="perf-item">
+          <span class="perf-label">파티클:</span>
+          <span class="perf-value" id="particle-value">--</span>
+        </div>
+        <div class="perf-item">
+          <span class="perf-label">실드:</span>
+          <span class="perf-value" id="shield-value">--</span>
+        </div>
+        <div class="perf-item">
+          <span class="perf-label">WebXR:</span>
+          <span class="perf-value" id="webxr-value">--</span>
+        </div>
+      </div>
+      <div class="perf-controls">
+        <div class="perf-help">F1-F3: 실드모드 | F4: 성능정보 | F5: WebXR정보 | F6: 토글</div>
+      </div>
+    </div>
+
     <video id="webcam" autoplay playsinline style="display: none;"></video>
 
     <script type="module" src="/src/main.js"></script>

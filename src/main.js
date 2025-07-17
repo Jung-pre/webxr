@@ -9,6 +9,150 @@ import { PointerLockControls } from 'three/examples/jsm/controls/PointerLockCont
 // TWEEN 라이브러리 (CDN에서 로드)
 const TWEEN = window.TWEEN;
 
+// 파티클 성능 최적화 설정
+const PARTICLE_LIMITS = {
+  explosion: 50,     // 폭발 파티클 최대 개수
+  aurora: 30,        // 오로라 파티클 최대 개수
+  portal: 25,        // 포털 파티클 최대 개수
+  fireball: 20       // 파이어볼 파티클 최대 개수 (각 파이어볼당)
+};
+
+// 파티클 생성 빈도 조절
+const PARTICLE_SPAWN_RATES = {
+  aurora: 0.3,       // 30% 확률 (기존 50%에서 감소)
+  portal: 0.05,      // 5% 확률 (기존 10%에서 감소)
+  fireball: 0.4      // 40% 확률
+};
+
+// 성능 모니터링 함수
+function getParticleCount() {
+  return {
+    explosion: explosionParticles.length,
+    aurora: handAuroraParticles.length,
+    portal: portalParticles.length,
+    fireball: fireballs.reduce((sum, f) => sum + (f.emitter ? f.emitter.particles.length : 0), 0),
+    total: explosionParticles.length + handAuroraParticles.length + portalParticles.length + 
+           fireballs.reduce((sum, f) => sum + (f.emitter ? f.emitter.particles.length : 0), 0)
+  };
+}
+
+// 실드 성능 정보 함수
+function getShieldInfo() {
+  return {
+    active: !!shieldMesh,
+    pooled: !!shieldPool,
+    performanceMode: shieldPerformanceMode,
+    geometry: shieldMesh ? `${shieldMesh.geometry.attributes.position.count} vertices` : 'none',
+    material: shieldMesh ? shieldMesh.material.type : 'none',
+    transparent: shieldMesh ? shieldMesh.material.transparent : false,
+    wireframe: shieldMesh ? shieldMesh.material.wireframe : false
+  };
+}
+
+// 실드 성능 모드 전환 함수
+function setShieldPerformanceMode(mode) {
+  if (mode >= 0 && mode <= 2) {
+    shieldPerformanceMode = mode;
+    
+    // 현재 실드가 활성화되어 있으면 재생성
+    if (shieldMesh) {
+      const wasActive = true;
+      tryRemoveShield();
+      if (wasActive) {
+        tryCreateShield();
+      }
+    }
+    
+    const modeNames = ['최고 성능 (와이어프레임)', '균형 (최적화된 반투명)', '최고 품질 (기존)'];
+    console.log(`실드 성능 모드 변경: ${modeNames[mode]}`);
+  }
+}
+
+// 성능 테스트를 위한 FPS 측정 함수
+let fpsCounter = 0;
+let lastFpsTime = performance.now();
+let currentFPS = 0;
+
+function updateFPS() {
+  fpsCounter++;
+  const now = performance.now();
+  if (now - lastFpsTime >= 1000) {
+    currentFPS = fpsCounter;
+    fpsCounter = 0;
+    lastFpsTime = now;
+  }
+}
+
+function getCurrentFPS() {
+  return currentFPS;
+}
+
+// WebXR 성능 최적화 함수
+function optimizeForVR(enableVR) {
+  if (enableVR && !isVROptimized) {
+    // VR 모드 최적화 활성화
+    isVROptimized = true;
+    
+    // 그림자 맵 해상도 감소
+    if (scene.children.find(child => child.type === 'DirectionalLight')) {
+      const dirLight = scene.children.find(child => child.type === 'DirectionalLight');
+      dirLight.shadow.mapSize.width = 512;
+      dirLight.shadow.mapSize.height = 512;
+      dirLight.shadow.needsUpdate = true;
+    }
+    
+    // 실드를 자동으로 최고 성능 모드로 전환
+    if (shieldPerformanceMode > 0) {
+      setShieldPerformanceMode(0);
+    }
+    
+    // 파티클 한도 더 엄격하게 제한
+    PARTICLE_LIMITS.explosion = 25; // 50 -> 25
+    PARTICLE_LIMITS.aurora = 15;    // 30 -> 15
+    PARTICLE_LIMITS.portal = 12;    // 25 -> 12
+    
+    // 파티클 생성 빈도 더 감소
+    PARTICLE_SPAWN_RATES.aurora = 0.2;  // 0.3 -> 0.2
+    PARTICLE_SPAWN_RATES.portal = 0.03; // 0.05 -> 0.03
+    
+  } else if (!enableVR && isVROptimized) {
+    // 데스크톱 모드 복원
+    isVROptimized = false;
+    
+    // 그림자 맵 해상도 복원
+    if (scene.children.find(child => child.type === 'DirectionalLight')) {
+      const dirLight = scene.children.find(child => child.type === 'DirectionalLight');
+      dirLight.shadow.mapSize.width = originalShadowMapSize;
+      dirLight.shadow.mapSize.height = originalShadowMapSize;
+      dirLight.shadow.needsUpdate = true;
+    }
+    
+    // 파티클 한도 원래대로 복원
+    PARTICLE_LIMITS.explosion = 50;
+    PARTICLE_LIMITS.aurora = 30;
+    PARTICLE_LIMITS.portal = 25;
+    
+    // 파티클 생성 빈도 복원
+    PARTICLE_SPAWN_RATES.aurora = 0.3;
+    PARTICLE_SPAWN_RATES.portal = 0.05;
+  }
+}
+
+// WebXR 성능 정보 함수
+function getWebXRPerformanceInfo() {
+  return {
+    isPresenting: renderer && renderer.xr ? renderer.xr.isPresenting : false,
+    vrActive: renderer && renderer.xr ? renderer.xr.isPresenting : false,
+    isVROptimized: isVROptimized,
+    currentFPS: getCurrentFPS(),
+    shadowMapSize: scene && scene.children ? 
+      (scene.children.find(child => child.type === 'DirectionalLight') ? 
+        scene.children.find(child => child.type === 'DirectionalLight').shadow.mapSize.width : 'none') : 'none',
+    particleLimits: PARTICLE_LIMITS,
+    spawnRates: PARTICLE_SPAWN_RATES
+  };
+}
+
 // Mediapipe HAND_CONNECTIONS (관절 연결 정보)
 const HAND_CONNECTIONS = [
   [0,1],[1,2],[2,3],[3,4],      // 엄지
@@ -74,6 +218,7 @@ let bossSpawnPhase = 'waiting'; // 'waiting', 'portal', 'spawning', 'descending'
 let bossSpawnEffects = [];
 let bossSpawnStartTime = 0;
 let bossSpawnPortal = null;
+let portalTweens = []; // 포털 관련 TWEEN 애니메이션 저장
 let portalParticles = [];
 
 let groundY = 0; // 지형 최고점 Y값(전역)
@@ -98,8 +243,10 @@ class FireballEmitter {
   }
 
   emit(position) {
-    // 한 번에 여러 개 입자 생성
-    for (let i = 0; i < 8; i++) {
+    // 파티클 개수 제한 적용하여 입자 생성
+    const maxNewParticles = Math.min(8, PARTICLE_LIMITS.fireball - this.particles.length);
+    
+    for (let i = 0; i < maxNewParticles; i++) {
       const mesh = new THREE.Mesh(this.particleGeometry, this.particleMaterial.clone());
       mesh.position.copy(position);
       this.scene.add(mesh);
@@ -108,7 +255,8 @@ class FireballEmitter {
         (Math.random() - 0.5) * 0.12,
         (Math.random() - 0.5) * 0.12
       );
-      this.particles.push({ mesh, velocity, life: Math.random() * 20 + 20 });
+      // 파티클 수명을 단축 (20+20 -> 10+10)
+      this.particles.push({ mesh, velocity, life: Math.random() * 10 + 10 });
     }
   }
 
@@ -193,8 +341,7 @@ let shieldMesh = null;
 // === [플레이어 HP 시스템 추가] ===
 let playerHP = 100;
 let playerMaxHP = 100;
-let playerHpBarMesh = null;
-let playerHpBarBgMesh = null;
+// 3D 플레이어 체력바 변수들 제거됨 (2D UI만 사용)
 let isPlayerDead = false;
 
 // === [플레이어 피격 임팩트 변수 전역 선언] ===
@@ -216,32 +363,12 @@ function updatePlayerHpUI() {
 }
 
 function createPlayerHpBar() {
-  if (!player) return;
-  // HP바 배경
-  const bgGeom = new THREE.PlaneGeometry(2.2, 0.18);
-  const bgMat = new THREE.MeshBasicMaterial({ color: 0x222222, transparent: true, opacity: 0.7 });
-  playerHpBarBgMesh = new THREE.Mesh(bgGeom, bgMat);
-  playerHpBarBgMesh.position.set(0, 2.5, 0);
-  playerHpBarBgMesh.renderOrder = 1000;
-  playerHpBarBgMesh.material.depthTest = false;
-  player.add(playerHpBarBgMesh);
-  // HP바
-  const barGeom = new THREE.PlaneGeometry(2, 0.12);
-  const barMat = new THREE.MeshBasicMaterial({ color: 0x55ff55, transparent: true, opacity: 0.95 });
-  playerHpBarMesh = new THREE.Mesh(barGeom, barMat);
-  playerHpBarMesh.position.set(0, 2.5, 0.01);
-  playerHpBarMesh.renderOrder = 1001;
-  playerHpBarMesh.material.depthTest = false;
-  player.add(playerHpBarMesh);
-  updatePlayerHpUI(); // 2D HP UI도 초기화
+  // 3D 체력바는 제거됨 - 2D UI만 사용
+  updatePlayerHpUI(); // 2D HP UI만 초기화
 }
 
 function updatePlayerHpBar() {
-  if (!playerHpBarMesh) return;
-  const hpRatio = Math.max(0, playerHP) / playerMaxHP;
-  playerHpBarMesh.scale.x = hpRatio;
-  playerHpBarMesh.position.x = -(1 - hpRatio) * 1;
-  // === 2D HP UI도 갱신 ===
+  // 3D 체력바는 제거됨 - 2D UI만 갱신
   updatePlayerHpUI();
 }
 
@@ -315,10 +442,8 @@ function spawnPlayerDamageText(position, value = 10) {
 function triggerPlayerHitEffect() {
   if (!player) return;
   player.material.color.set(0xff3333);
-  if (playerHpBarMesh) playerHpBarMesh.material.color.set(0xff3333);
   setTimeout(() => {
     if (player) player.material.color.set(0x55ff55);
-    if (playerHpBarMesh) playerHpBarMesh.material.color.set(0x55ff55);
   }, 180);
 }
 
@@ -351,7 +476,11 @@ function spawnPlayerDeathParticles() {
   const pos = player.position.clone();
   
   // 붉은 파티클 (피)
-  for (let i = 0; i < 30; i++) {
+  // 빨간 폭발 파티클 (개수 제한 적용)
+  const availableSlots = PARTICLE_LIMITS.explosion - explosionParticles.length;
+  const redParticleCount = Math.min(30, Math.floor(availableSlots * 0.6)); // 60%를 빨간 파티클에 할당
+  
+  for (let i = 0; i < redParticleCount; i++) {
     const geom = new THREE.SphereGeometry(0.05, 6, 6);
     const mat = new THREE.MeshBasicMaterial({ 
       color: 0xff0000, 
@@ -376,8 +505,10 @@ function spawnPlayerDeathParticles() {
     });
   }
   
-  // 어두운 연기 파티클
-  for (let i = 0; i < 20; i++) {
+  // 어두운 연기 파티클 (나머지 슬롯 사용)
+  const smokeParticleCount = Math.min(20, PARTICLE_LIMITS.explosion - explosionParticles.length);
+  
+  for (let i = 0; i < smokeParticleCount; i++) {
     const geom = new THREE.SphereGeometry(0.08, 6, 6);
     const mat = new THREE.MeshBasicMaterial({ 
       color: 0x333333, 
@@ -473,14 +604,23 @@ function createPlayer() {
   const geometry = new THREE.BoxGeometry(1, 2, 1);
   const material = new THREE.MeshStandardMaterial({ color: 0x55ff55, transparent: true, opacity: 0 }); // 완전 투명
   player = new THREE.Mesh(geometry, material);
-  // 초기 위치는 groundY가 설정된 후 landscape 로드 콜백에서 설정됨
-  player.position.set(0, groundY + 1, 0);
+  
+  // 초기 위치 설정 - landscape 로드 상태와 관계없이 안전한 위치로 시작
+  // landscape가 로드되면 landscapeLoader.load 콜백에서 올바른 위치로 이동
+  player.position.set(0, 10, 0); // 적당한 높이에서 시작 (50은 너무 높음)
+  
+  // 중력 및 점프 상태 초기화
+  velocityY = 0;
+  canJump = true;
+  
   player.castShadow = true;
   player.receiveShadow = true;
   scene.add(player);
   createPlayerHpBar();
   updatePlayerHpUI(); // 2D HP UI도 초기화
 }
+
+
 
 // === [보스 등장 시퀀스 함수들] ===
 function startBossSpawnSequence() {
@@ -661,20 +801,24 @@ function createBossSpawnPortal() {
 function animatePortal() {
   if (!bossSpawnPortal) return;
   
+  // 기존 포털 TWEEN 정리
+  cleanupPortalTweens();
+  
   // 링들 회전 애니메이션
   const rotationTween = { rotation: 0 };
   const rotateTween = new TWEEN.Tween(rotationTween)
     .to({ rotation: Math.PI * 2 }, 4000)
     .repeat(Infinity)
     .onUpdate(() => {
-      if (bossSpawnPortal.outerRing) {
+      if (bossSpawnPortal && bossSpawnPortal.outerRing) {
         bossSpawnPortal.outerRing.rotation.z = rotationTween.rotation;
       }
-      if (bossSpawnPortal.innerRing) {
+      if (bossSpawnPortal && bossSpawnPortal.innerRing) {
         bossSpawnPortal.innerRing.rotation.z = -rotationTween.rotation * 1.5;
       }
     });
   rotateTween.start();
+  portalTweens.push(rotateTween);
   
   // 포털 펄스 효과
   const pulse = { scale: 1 };
@@ -684,12 +828,22 @@ function animatePortal() {
     .yoyo(true)
     .easing(TWEEN.Easing.Sinusoidal.InOut)
     .onUpdate(() => {
-      if (bossSpawnPortal.core) {
+      if (bossSpawnPortal && bossSpawnPortal.core) {
         bossSpawnPortal.core.scale.set(pulse.scale, pulse.scale, pulse.scale);
       }
     });
   pulseTween.start();
+  portalTweens.push(pulseTween);
 }
+
+function cleanupPortalTweens() {
+  portalTweens.forEach(tween => {
+    tween.stop();
+  });
+  portalTweens = [];
+}
+
+
 
 function createPortalParticles() {
   if (!bossSpawnPortal) return;
@@ -836,28 +990,29 @@ function destroyPortal() {
   const fade = new TWEEN.Tween(fadeOut)
     .to({ opacity: 0 }, 1000)
     .onUpdate(() => {
-      if (bossSpawnPortal.outerRing) {
+      if (bossSpawnPortal && bossSpawnPortal.outerRing) {
         bossSpawnPortal.outerRing.material.opacity = 0.7 * fadeOut.opacity;
       }
-      if (bossSpawnPortal.innerRing) {
+      if (bossSpawnPortal && bossSpawnPortal.innerRing) {
         bossSpawnPortal.innerRing.material.opacity = 0.8 * fadeOut.opacity;
       }
-      if (bossSpawnPortal.core) {
+      if (bossSpawnPortal && bossSpawnPortal.core) {
         bossSpawnPortal.core.material.opacity = 0.6 * fadeOut.opacity;
       }
-      if (bossSpawnPortal.cylinder) {
+      if (bossSpawnPortal && bossSpawnPortal.cylinder) {
         bossSpawnPortal.cylinder.material.opacity = 0.3 * fadeOut.opacity;
       }
     })
     .onComplete(() => {
       // 포털 제거
-      if (bossSpawnPortal.outerRing) scene.remove(bossSpawnPortal.outerRing);
-      if (bossSpawnPortal.innerRing) scene.remove(bossSpawnPortal.innerRing);
-      if (bossSpawnPortal.core) scene.remove(bossSpawnPortal.core);
-      if (bossSpawnPortal.cylinder) scene.remove(bossSpawnPortal.cylinder);
+      if (bossSpawnPortal && bossSpawnPortal.outerRing) scene.remove(bossSpawnPortal.outerRing);
+      if (bossSpawnPortal && bossSpawnPortal.innerRing) scene.remove(bossSpawnPortal.innerRing);
+      if (bossSpawnPortal && bossSpawnPortal.core) scene.remove(bossSpawnPortal.core);
+      if (bossSpawnPortal && bossSpawnPortal.cylinder) scene.remove(bossSpawnPortal.cylinder);
       bossSpawnPortal = null;
     });
   fade.start();
+  portalTweens.push(fade);
 }
 
 function spawnBoss() {
@@ -967,8 +1122,8 @@ function animateBossEntrance() {
         
         // 포털이 사라지면서 추가 파티클 효과
         if (portalFadeProgress > 0.5) {
-          // 포털 붕괴 파티클 (간헐적으로 생성)
-          if (Math.random() < 0.1) {
+          // 포털 붕괴 파티클 (간헐적으로 생성, 개수 제한)
+          if (Math.random() < PARTICLE_SPAWN_RATES.portal && portalParticles.length < PARTICLE_LIMITS.portal) {
             const geometry = new THREE.SphereGeometry(0.4, 8, 8);
             const material = new THREE.MeshBasicMaterial({ 
               color: 0x6644ff,
@@ -1177,18 +1332,31 @@ function init() {
   // Fog
   scene.fog = new THREE.Fog(0xb3e3ff, 40, 120);
 
-  // Camera
+  // Camera with WebXR optimizations
   camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 1000);
   // 초기 카메라 위치는 landscape 로드 후 설정됨
   camera.position.set(0, 8, 24);
+  
+  // WebXR 최적화: Frustum Culling 활성화
+  camera.matrixAutoUpdate = true;
+  camera.matrixWorldNeedsUpdate = true;
 
   // jointSpheres/Lines/Labels를 scene 생성 직후에 추가
   initHandSpheres();
 
-  // Renderer
-  renderer = new THREE.WebGLRenderer({ antialias: true });
+  // Renderer with WebXR optimizations
+  renderer = new THREE.WebGLRenderer({ 
+    antialias: false, // VR에서 안티앨리어싱 비활성화로 성능 향상
+    powerPreference: "high-performance", // 고성능 GPU 사용
+    stencil: false // 스텐실 버퍼 비활성화
+  });
   renderer.setSize(window.innerWidth, window.innerHeight);
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2)); // 픽셀 비율 제한
+  
+  // WebXR 환경에 최적화된 그림자 설정
   renderer.shadowMap.enabled = true;
+  renderer.shadowMap.type = THREE.PCFShadowMap; // 기본값이지만 명시적 설정
+  
   renderer.xr.enabled = true;
   document.body.appendChild(renderer.domElement);
   document.body.appendChild(VRButton.createButton(renderer));
@@ -1200,8 +1368,20 @@ function init() {
   const dirLight = new THREE.DirectionalLight(0xffffff, 1.1); // 밝은 태양빛
   dirLight.position.set(20, 30, 10);
   dirLight.castShadow = true;
-  dirLight.shadow.mapSize.width = 1024;
-  dirLight.shadow.mapSize.height = 1024;
+  
+  // WebXR 최적화: 그림자 맵 해상도를 VR 성능에 맞게 조절
+  const shadowMapSize = renderer.xr.isPresenting ? 512 : 1024;
+  dirLight.shadow.mapSize.width = shadowMapSize;
+  dirLight.shadow.mapSize.height = shadowMapSize;
+  
+  // 그림자 카메라 최적화
+  dirLight.shadow.camera.near = 1;
+  dirLight.shadow.camera.far = 100;
+  dirLight.shadow.camera.left = -50;
+  dirLight.shadow.camera.right = 50;
+  dirLight.shadow.camera.top = 50;
+  dirLight.shadow.camera.bottom = -50;
+  
   scene.add(dirLight);
 
   // Ground: minecraft_world 35배로 교체
@@ -1215,14 +1395,33 @@ function init() {
     // 지형의 bounding box 계산 후 플레이어를 땅 위로 올림
     const box = new THREE.Box3().setFromObject(landscape);
     groundY = box.max.y;
+    
     if (player) {
-      // 맵 중앙에서 시작하도록 수정 (하늘에서 내려오지 않게)
-      player.position.set(0, groundY + 1, 0); // 초록색 땅 위에 시작
-      // 카메라도 플레이어 위치로 이동
-      camera.position.set(0, groundY + 8, 24);
-      if (controls) {
-        controls.object.position.set(0, groundY + 1.2, 0);
+      // Raycaster로 정확한 바닥 위치 찾기
+      const raycaster = new THREE.Raycaster();
+      const origin = new THREE.Vector3(0, groundY + 10, 0); // 충분히 높은 위치에서 시작
+      raycaster.set(origin, new THREE.Vector3(0, -1, 0));
+      const intersects = raycaster.intersectObject(landscape, true);
+      
+      let safeY = groundY + 1; // 기본값
+      if (intersects.length > 0) {
+        safeY = intersects[0].point.y + 1; // 정확한 바닥 위치 + 1
       }
+      
+      // 맵 중앙에서 시작하도록 수정 (하늘에서 내려오지 않게)
+      player.position.set(0, safeY, 0); // 정확한 바닥 위에 시작
+      
+      // 중력 및 점프 상태 초기화
+      velocityY = 0;
+      canJump = true;
+      
+      // 카메라도 플레이어 위치로 이동
+      camera.position.set(0, safeY + 7, 24);
+      if (controls) {
+        controls.object.position.set(0, safeY + 0.2, 0);
+      }
+      
+      console.log(`Landscape loaded. GroundY: ${groundY}, Player Y: ${safeY}`);
     }
   });
 
@@ -1245,12 +1444,21 @@ function init() {
   scene.add(controls.object);
   // 플레이어(박스) 생성
   createPlayer();
-  // XR 세션 시작/종료 시 컨트롤 활성화/비활성화
+  // XR 세션 시작/종료 시 최적화 및 컨트롤 설정
   renderer.xr.addEventListener('sessionstart', () => {
     controls.enabled = false;
+    
+    // VR 모드 성능 최적화
+    optimizeForVR(true);
+    console.log('VR 모드 시작 - 성능 최적화 활성화');
   });
+  
   renderer.xr.addEventListener('sessionend', () => {
     controls.enabled = true;
+    
+    // 데스크톱 모드로 복원
+    optimizeForVR(false);
+    console.log('데스크톱 모드 복원');
   });
   // 클릭 시 포인터락 진입
   renderer.domElement.addEventListener('click', () => {
@@ -1713,6 +1921,9 @@ function auroraColorByTime(t) {
 const originalAnimate = animate;
 function animate() {
   renderer.setAnimationLoop(() => {
+    // FPS 측정 업데이트
+    updateFPS();
+    
     // Apply acceleration to all magic effects
     const accel = 1.1; // 가속도를 1.1로 설정
 
@@ -1725,8 +1936,8 @@ function animate() {
         // boss와의 충돌 체크
         if (boss && bossBox) {
           bossBox.setFromObject(boss);
-          const fireballBox = new THREE.Box3().setFromObject(f.mesh);
-          if (bossBox.intersectsBox(fireballBox)) {
+          reusableFireballBox.setFromObject(f.mesh);
+          if (bossBox.intersectsBox(reusableFireballBox)) {
             // fireball 제거
             f.active = false;
             scene.remove(f.mesh);
@@ -1808,8 +2019,8 @@ function animate() {
         // boss와의 충돌 체크
         if (boss && bossBox) {
           bossBox.setFromObject(boss);
-          const iceballBox = new THREE.Box3().setFromObject(f.mesh);
-          if (bossBox.intersectsBox(iceballBox)) {
+          reusableFireballBox.setFromObject(f.mesh);
+                      if (bossBox.intersectsBox(reusableFireballBox)) {
             // iceball 제거
             f.active = false;
             scene.remove(f.mesh);
@@ -1891,8 +2102,8 @@ function animate() {
         // boss와의 충돌 체크
         if (boss && bossBox) {
           bossBox.setFromObject(boss);
-          const lightningBox = new THREE.Box3().setFromObject(f.mesh);
-          if (bossBox.intersectsBox(lightningBox)) {
+          reusableFireballBox.setFromObject(f.mesh);
+                      if (bossBox.intersectsBox(reusableFireballBox)) {
             // lightningball 제거
             f.active = false;
             scene.remove(f.mesh);
@@ -2375,24 +2586,28 @@ function animate() {
         }
       }
     }
-    // 3D HP바 업데이트 (보스 머리 위)
-    if (boss && bossHpBarMesh && bossBox) {
-      // HP 비율
-      const hpRatio = Math.max(0, Math.min(1, boss.currentHP / boss.maxHP));
-      // HP바 스케일
-      bossHpBarMesh.scale.x = Math.max(0.01, hpRatio);
-      // 보스의 머리 위 좌표 계산 (max.y + 약간 위)
-      const bossWorldPos = new THREE.Vector3();
-      boss.getWorldPosition(bossWorldPos);
-      // barWidth는 전역 사용
-      const barY = bossBox.max.y + 8;
-      // HP바 position.x를 항상 같게!
-      bossHpBarMesh.position.set(bossWorldPos.x, barY, bossWorldPos.z);
-      // 카메라를 향하도록 (수평 회전만 적용)
-      const dx = camera.position.x - bossHpBarMesh.position.x;
-      const dz = camera.position.z - bossHpBarMesh.position.z;
-      const rotY = Math.atan2(dx, dz);
-      bossHpBarMesh.rotation.set(0, rotY, 0);
+    // 3D HP바 업데이트 최적화 (30fps로 제한)
+    bossHPBarUpdateTimer += deltaTime;
+    if (bossHPBarUpdateTimer >= BOSS_HPBAR_UPDATE_INTERVAL) {
+      if (boss && bossHpBarMesh && bossBox) {
+        // HP 비율
+        const hpRatio = Math.max(0, Math.min(1, boss.currentHP / boss.maxHP));
+        // HP바 스케일
+        bossHpBarMesh.scale.x = Math.max(0.01, hpRatio);
+        // 보스의 머리 위 좌표 계산 (max.y + 약간 위)
+        const bossWorldPos = new THREE.Vector3();
+        boss.getWorldPosition(bossWorldPos);
+        // barWidth는 전역 사용
+        const barY = bossBox.max.y + 8;
+        // HP바 position.x를 항상 같게!
+        bossHpBarMesh.position.set(bossWorldPos.x, barY, bossWorldPos.z);
+        // 카메라를 향하도록 (수평 회전만 적용)
+        const dx = camera.position.x - bossHpBarMesh.position.x;
+        const dz = camera.position.z - bossHpBarMesh.position.z;
+        const rotY = Math.atan2(dx, dz);
+        bossHpBarMesh.rotation.set(0, rotY, 0);
+      }
+      bossHPBarUpdateTimer = 0;
     }
     updateBlinkMagic();
     // 번쩍임 효과
@@ -2482,8 +2697,8 @@ function animate() {
         // boss와의 충돌 체크
         if (boss && bossBox) {
           bossBox.setFromObject(boss);
-          const ballBox = new THREE.Box3().setFromObject(ball);
-          if (bossBox.intersectsBox(ballBox)) {
+          reusableFireballBox.setFromObject(ball);
+                      if (bossBox.intersectsBox(reusableFireballBox)) {
             // 오로라볼 제거
             ball.userData.active = false;
             scene.remove(ball);
@@ -2519,12 +2734,22 @@ function animate() {
     }
     gestureDiv.innerText = gestureText;
     renderer.render(scene, camera);
-    // 드래곤 fly 애니메이션 업데이트 및 플레이어(혹은 카메라) 바라보게
-    if (dragonMixer) dragonMixer.update(1/60);
-    // 플레이어를 바라보게
-    if (boss && player) {
-      boss.lookAt(player.position.x, boss.position.y, player.position.z);
-      boss.rotateY(Math.PI); // Y축 180도 회전
+    // 드래곤 fly 애니메이션 업데이트 최적화 (30fps로 제한)
+    const deltaTime = renderer.xr.isPresenting ? 1/72 : 1/60;
+    bossAnimationUpdateTimer += deltaTime;
+    if (bossAnimationUpdateTimer >= BOSS_ANIMATION_UPDATE_INTERVAL) {
+      if (dragonMixer) dragonMixer.update(bossAnimationUpdateTimer);
+      bossAnimationUpdateTimer = 0;
+    }
+    
+    // 플레이어를 바라보게 하는 업데이트 최적화 (15fps로 제한)
+    bossLookAtUpdateTimer += deltaTime;
+    if (bossLookAtUpdateTimer >= BOSS_LOOKAT_UPDATE_INTERVAL) {
+      if (boss && player) {
+        boss.lookAt(player.position.x, boss.position.y, player.position.z);
+        boss.rotateY(Math.PI); // Y축 180도 회전
+      }
+      bossLookAtUpdateTimer = 0;
     }
     // === [보스 파이어볼 이동/충돌/데미지 처리] ===
     for (let i = bossProjectiles.length - 1; i >= 0; i--) {
@@ -2600,16 +2825,15 @@ function animate() {
           }
         }
       }
-      // 실드 우선 판정
+      // 실드 우선 판정 (성능 최적화)
       let hit = false;
       if (shieldMesh && player) {
-        const shieldBox = new THREE.Box3().setFromObject(shieldMesh);
-        // 실드 충돌 박스를 약간 확장 (더 관대한 방어)
-        const expandAmount = 0.3;
-        shieldBox.expandByScalar(expandAmount);
+        // 재사용 가능한 바운딩 박스 사용 (메모리 할당 최소화)
+        reusableShieldBox.copy(shieldMesh.userData.boundingBox);
+        reusableShieldBox.translate(shieldMesh.position);
         
-        const projectileBox = new THREE.Box3().setFromObject(f.mesh);
-        if (shieldBox.intersectsBox(projectileBox)) {
+        reusableProjectileBox.setFromObject(f.mesh);
+        if (reusableShieldBox.intersectsBox(reusableProjectileBox)) {
           // 실드 이펙트
           spawnExplosionParticles(f.mesh.position, 0x33ccff, 0x99e6ff);
           scene.remove(f.mesh);
@@ -2618,13 +2842,13 @@ function animate() {
         }
       }
       if (!hit && player) {
-        const playerBox = new THREE.Box3().setFromObject(player);
+        reusablePlayerBox.setFromObject(player);
         // 플레이어 충돌 박스를 약간 확장 (더 관대한 판정)
         const expandAmount = 0.5;
-        playerBox.expandByScalar(expandAmount);
+        reusablePlayerBox.expandByScalar(expandAmount);
         
-        const projectileBox = new THREE.Box3().setFromObject(f.mesh);
-        if (playerBox.intersectsBox(projectileBox)) {
+        reusableProjectileBox.setFromObject(f.mesh);
+        if (reusablePlayerBox.intersectsBox(reusableProjectileBox)) {
           damagePlayer(15, f.mesh.position);
           spawnExplosionParticles(f.mesh.position, 0xff5500, 0xff2200);
           scene.remove(f.mesh);
@@ -2715,7 +2939,8 @@ function animate() {
     if (moveLeft) moveDir.sub(right);
     if (moveRight) moveDir.add(right);
     moveDir.normalize();
-    // 기존 속도와 delta를 곱해 너무 빠르지 않게 조정 (speed * delta * 0.5 등으로 조절)
+    
+    // 기존 속도와 delta를 곱해 너무 빠르지 않게 조정
     const movement = moveDir.multiplyScalar(speed * delta * 0.2);
     const newPos = player.position.clone().add(movement);
     
@@ -2727,27 +2952,39 @@ function animate() {
       newPos.z = Math.max(box.min.z + margin, Math.min(box.max.z - margin, newPos.z));
     }
     
-    player.position.copy(newPos);
-    
-    // 중력 적용
-    velocityY -= gravity * delta;
-    player.position.y += velocityY * delta;
+    // landscape가 로드된 경우에만 중력 및 충돌 감지 적용
+    if (landscape && groundY !== undefined) {
+      // 먼저 수평 이동 적용
+      player.position.x = newPos.x;
+      player.position.z = newPos.z;
+      
+      // 중력 적용
+      velocityY -= gravity * delta;
+      const newY = player.position.y + velocityY * delta;
 
-    // Raycaster로 바닥 y값 샘플링
-    let groundAt = groundY;
-    if (landscape) {
+      // Raycaster로 바닥 y값 샘플링 - 현재 x,z 위치에서 위쪽에서 아래로 쏨
+      let groundAt = groundY;
       const raycaster = new THREE.Raycaster();
-      const origin = player.position.clone();
-      origin.y += 2; // 위에서 아래로 쏨
+      const origin = new THREE.Vector3(player.position.x, Math.max(player.position.y + 5, groundY + 10), player.position.z);
       raycaster.set(origin, new THREE.Vector3(0, -1, 0));
       const intersects = raycaster.intersectObject(landscape, true);
       if (intersects.length > 0) {
         groundAt = intersects[0].point.y;
       }
-    }
-    // 바닥보다 아래로 못 내려가게
-    if (player.position.y < groundAt + 1) {
-      player.position.y = groundAt + 1;
+      
+      // 바닥보다 아래로 못 내려가게
+      if (newY < groundAt + 1) {
+        player.position.y = groundAt + 1;
+        velocityY = 0;
+        canJump = true;
+      } else {
+        player.position.y = newY;
+      }
+    } else {
+      // landscape가 아직 로드되지 않은 경우
+      player.position.x = newPos.x;
+      player.position.z = newPos.z;
+      player.position.y = 10; // 고정된 높이 유지
       velocityY = 0;
       canJump = true;
     }
@@ -2796,6 +3033,24 @@ function animate() {
     tryCreateShield();
     if (shieldMesh && player) {
       shieldMesh.position.copy(player.position);
+      
+      // 성능 모드에 따른 시각 효과 (30fps로 제한하여 성능 향상)
+      const now = performance.now();
+      if (!shieldMesh.userData.lastEffectUpdate || now - shieldMesh.userData.lastEffectUpdate > 33) {
+        shieldMesh.userData.lastEffectUpdate = now;
+        
+        if (shieldPerformanceMode === 0) {
+          // 와이어프레임 모드: 색상 변화 효과
+          const time = now * 0.002;
+          const intensity = 0.5 + Math.sin(time) * 0.3;
+          shieldMesh.material.color.setRGB(0.2 * intensity, 0.8 * intensity, 1.0 * intensity);
+        } else if (shieldPerformanceMode >= 1) {
+          // 반투명 모드: 투명도 펄스 효과
+          const time = now * 0.003;
+          const baseOpacity = shieldPerformanceMode === 1 ? 0.3 : 0.25;
+          shieldMesh.material.opacity = baseOpacity + Math.sin(time) * 0.05;
+        }
+      }
     }
   } else {
     tryRemoveShield();
@@ -3143,8 +3398,8 @@ function updateHandAuroraEffects() {
       handAuroraBall.position.copy(auroraBallMid);
       handAuroraBall.scale.set(scale, scale, scale);
     }
-    // 오로라 파티클은 handAuroraBall이 존재하면 항상 생성
-    if (Math.random() < 0.5) {
+    // 오로라 파티클은 handAuroraBall이 존재하면 제한된 빈도로 생성
+    if (Math.random() < PARTICLE_SPAWN_RATES.aurora && handAuroraParticles.length < PARTICLE_LIMITS.aurora) {
       const p = createAuroraParticle(handAuroraBall.position, handAuroraBall.scale.x);
       handAuroraParticles.push(p);
     }
@@ -3256,31 +3511,105 @@ function createBigAuroraBall(pos, scale) {
   return mesh;
 }
 
+// 실드 성능 모드 설정 (0: 최고 성능, 1: 균형, 2: 최고 품질)
+let shieldPerformanceMode = 0;
+
+// WebXR 성능 최적화 설정
+let isVROptimized = false;
+let originalShadowMapSize = 1024;
+
 function createShield() {
-  // 플레이어를 감싸는 파란색 투명 구체
-  const geometry = new THREE.SphereGeometry(1.3, 48, 32);
-  const material = new THREE.MeshPhysicalMaterial({
-    color: 0x33ccff, // 밝은 파랑
-    transparent: true,
-    opacity: 0.32,
-    metalness: 0.2,
-    roughness: 0.08,
-    transmission: 0.85, // 유리 느낌
-    thickness: 0.5,
-    ior: 1.3,
-    clearcoat: 0.7,
-    clearcoatRoughness: 0.1,
-    side: THREE.DoubleSide,
-    depthWrite: false,
-  });
+  // 더 낮은 해상도로 기하학 최적화
+  const geometry = new THREE.SphereGeometry(1.3, 8, 6);
+  let material;
+  
+  switch (shieldPerformanceMode) {
+    case 0: // 최고 성능 모드 - 불투명 + 와이어프레임
+      material = new THREE.MeshBasicMaterial({
+        color: 0x33ccff,
+        wireframe: true,
+        transparent: false,
+        side: THREE.FrontSide, // 단면만 렌더링
+      });
+      break;
+      
+    case 1: // 균형 모드 - 반투명이지만 최적화
+      material = new THREE.MeshBasicMaterial({
+        color: 0x33ccff,
+        transparent: true,
+        opacity: 0.3,
+        side: THREE.FrontSide, // 단면만 렌더링
+        depthWrite: true, // 깊이 쓰기 활성화
+        alphaTest: 0.1, // 알파 테스트로 성능 향상
+      });
+      break;
+      
+    case 2: // 최고 품질 모드 - 기존 설정
+    default:
+      material = new THREE.MeshBasicMaterial({
+        color: 0x33ccff,
+        transparent: true,
+        opacity: 0.25,
+        side: THREE.FrontSide, // DoubleSide 대신 FrontSide 사용
+        depthWrite: true, // 깊이 쓰기 활성화
+        alphaTest: 0.05,
+      });
+      break;
+  }
+  
   const mesh = new THREE.Mesh(geometry, material);
-  mesh.renderOrder = 999;
+  
+  // 성능 모드에 따른 렌더 순서 설정
+  if (shieldPerformanceMode >= 1) {
+    mesh.renderOrder = 999;
+  }
+  
+  // 충돌 감지용 고정된 바운딩 박스 (계산 한 번만)
+  // 구체의 반지름 1.3 + 확장 0.3 = 1.6
+  const radius = 1.6;
+  mesh.userData.boundingBox = new THREE.Box3(
+    new THREE.Vector3(-radius, -radius, -radius),
+    new THREE.Vector3(radius, radius, radius)
+  );
+  
+  // 프러스텀 컬링 비활성화 (작은 객체이므로)
+  mesh.frustumCulled = false;
+  
+  // 추가 최적화 설정
+  mesh.matrixAutoUpdate = true; // 위치 업데이트 최적화
+  mesh.userData.lastEffectUpdate = 0; // 시각 효과 업데이트 제한용
+  
   return mesh;
 }
 
+// 실드 풀링을 위한 변수
+let shieldPool = null;
+
+// 성능 최적화: 재사용 가능한 바운딩 박스들 (매 프레임마다 새로 생성하지 않음)
+const reusableShieldBox = new THREE.Box3();
+const reusableProjectileBox = new THREE.Box3();
+const reusablePlayerBox = new THREE.Box3();
+const reusableFireballBox = new THREE.Box3();
+
+// 보스 성능 최적화 변수들
+let bossAnimationUpdateTimer = 0;
+let bossLookAtUpdateTimer = 0;
+let bossHPBarUpdateTimer = 0;
+let bossBoundingBoxUpdateTimer = 0;
+const BOSS_ANIMATION_UPDATE_INTERVAL = 1/30; // 30fps로 제한
+const BOSS_LOOKAT_UPDATE_INTERVAL = 1/15; // 15fps로 제한
+const BOSS_HPBAR_UPDATE_INTERVAL = 1/30; // 30fps로 제한
+const BOSS_BBOX_UPDATE_INTERVAL = 1/20; // 20fps로 제한
+
 function tryCreateShield() {
   if (!shieldMesh && player) {
-    shieldMesh = createShield();
+    // 풀에서 재사용하거나 새로 생성
+    if (shieldPool) {
+      shieldMesh = shieldPool;
+      shieldPool = null;
+    } else {
+      shieldMesh = createShield();
+    }
     shieldMesh.position.copy(player.position);
     scene.add(shieldMesh);
     console.log('실드 생성!');
@@ -3290,8 +3619,8 @@ function tryCreateShield() {
 function tryRemoveShield() {
   if (shieldMesh) {
     scene.remove(shieldMesh);
-    shieldMesh.geometry.dispose();
-    shieldMesh.material.dispose();
+    // 풀에 저장하여 재사용 (메모리 할당/해제 최소화)
+    shieldPool = shieldMesh;
     shieldMesh = null;
   }
 }
@@ -3401,11 +3730,26 @@ function resetGameState() {
   
   // 플레이어 위치 초기화
   if (player && landscape) {
-    player.position.set(0, groundY + 1, 0);
-    camera.position.set(0, groundY + 8, 24);
-    if (controls) {
-      controls.object.position.set(0, groundY + 1.2, 0);
+    // Raycaster로 정확한 바닥 위치 찾기
+    const raycaster = new THREE.Raycaster();
+    const origin = new THREE.Vector3(0, groundY + 10, 0);
+    raycaster.set(origin, new THREE.Vector3(0, -1, 0));
+    const intersects = raycaster.intersectObject(landscape, true);
+    
+    let safeY = groundY + 1; // 기본값
+    if (intersects.length > 0) {
+      safeY = intersects[0].point.y + 1; // 정확한 바닥 위치 + 1
     }
+    
+    player.position.set(0, safeY, 0);
+    camera.position.set(0, safeY + 7, 24);
+    if (controls) {
+      controls.object.position.set(0, safeY + 0.2, 0);
+    }
+    
+    // 중력 상태 초기화
+    velocityY = 0;
+    canJump = true;
   }
   
   // 기존 보스 제거
@@ -3427,6 +3771,7 @@ function resetGameState() {
   
   // 포털 제거
   if (bossSpawnPortal) {
+    cleanupPortalTweens(); // TWEEN 정리
     if (bossSpawnPortal.outerRing) scene.remove(bossSpawnPortal.outerRing);
     if (bossSpawnPortal.innerRing) scene.remove(bossSpawnPortal.innerRing);
     if (bossSpawnPortal.core) scene.remove(bossSpawnPortal.core);
@@ -3519,6 +3864,37 @@ function handleMenuKey(e) {
   const mainMenu = document.getElementById('main-menu');
   const gameOverScreen = document.getElementById('game-over-screen');
   
+  // 게임 중 실드 성능 모드 전환 (F1, F2, F3 키)
+  if (mainMenu && mainMenu.style.display === 'none' && 
+      gameOverScreen && gameOverScreen.style.display === 'none') {
+    if (e.key === 'F1') {
+      setShieldPerformanceMode(0);
+      e.preventDefault();
+    } else if (e.key === 'F2') {
+      setShieldPerformanceMode(1);
+      e.preventDefault();
+    } else if (e.key === 'F3') {
+      setShieldPerformanceMode(2);
+      e.preventDefault();
+    } else if (e.key === 'F4') {
+      // 성능 정보 출력
+      console.log('=== 성능 정보 ===');
+      console.log('FPS:', getCurrentFPS());
+      console.log('파티클:', getParticleCount());
+      console.log('실드:', getShieldInfo());
+      e.preventDefault();
+    } else if (e.key === 'F5') {
+      // WebXR 성능 정보 출력
+      console.log('=== WebXR 성능 정보 ===');
+      console.log(getWebXRPerformanceInfo());
+      e.preventDefault();
+    } else if (e.key === 'F6') {
+      // 성능 모니터링 프레임 토글
+      togglePerformanceMonitor();
+      e.preventDefault();
+    }
+  }
+  
   // 메인 메뉴가 활성화된 경우
   if (mainMenu && mainMenu.style.display !== 'none') {
     if (e.key === 'ArrowUp') {
@@ -3552,6 +3928,79 @@ function handleMenuKey(e) {
   }
 }
 
+// 성능 모니터링 프레임 업데이트 함수
+function updatePerformanceMonitor() {
+  const fpsElement = document.getElementById('fps-value');
+  const particleElement = document.getElementById('particle-value');
+  const shieldElement = document.getElementById('shield-value');
+  const webxrElement = document.getElementById('webxr-value');
+  
+  if (fpsElement) {
+    const fps = getCurrentFPS();
+    fpsElement.textContent = fps;
+    // FPS에 따른 색상 변경
+    if (fps >= 50) {
+      fpsElement.style.color = '#4CAF50'; // 녹색
+    } else if (fps >= 30) {
+      fpsElement.style.color = '#FFC107'; // 노란색
+    } else {
+      fpsElement.style.color = '#F44336'; // 빨간색
+    }
+  }
+  
+  if (particleElement) {
+    try {
+      const particleCount = getParticleCount();
+      particleElement.textContent = `${particleCount.total}`;
+      // 파티클 수에 따른 색상 변경
+      if (particleCount.total <= 50) {
+        particleElement.style.color = '#4CAF50';
+      } else if (particleCount.total <= 100) {
+        particleElement.style.color = '#FFC107';
+      } else {
+        particleElement.style.color = '#F44336';
+      }
+    } catch (error) {
+      particleElement.textContent = '0';
+      particleElement.style.color = '#888';
+    }
+  }
+  
+  if (shieldElement) {
+    try {
+      const shieldInfo = getShieldInfo();
+      const modeNames = ['와이어', '최적화', '기본'];
+      const vertices = shieldInfo.geometry ? shieldInfo.geometry.split(' ')[0] : '0';
+      const status = shieldInfo.active ? `활성 (${modeNames[shieldInfo.performanceMode]}, ${vertices}v)` : '비활성';
+      shieldElement.textContent = status;
+      shieldElement.style.color = shieldInfo.active ? '#4CAF50' : '#888';
+    } catch (error) {
+      shieldElement.textContent = '비활성';
+      shieldElement.style.color = '#888';
+    }
+  }
+  
+  if (webxrElement) {
+    try {
+      const webxrInfo = getWebXRPerformanceInfo();
+      const status = webxrInfo && webxrInfo.vrActive ? 'VR 활성' : '데스크톱';
+      webxrElement.textContent = status;
+      webxrElement.style.color = webxrInfo && webxrInfo.vrActive ? '#2196F3' : '#888';
+    } catch (error) {
+      webxrElement.textContent = '초기화 중...';
+      webxrElement.style.color = '#888';
+    }
+  }
+}
+
+// 성능 모니터링 프레임 표시/숨김 토글 함수
+function togglePerformanceMonitor() {
+  const monitor = document.getElementById('performance-monitor');
+  if (monitor) {
+    monitor.style.display = monitor.style.display === 'none' ? 'block' : 'none';
+  }
+}
+
 document.addEventListener('DOMContentLoaded', () => {
   // 메뉴 클릭 이벤트
   document.querySelectorAll('.mc-menu-item').forEach((el, i) => {
@@ -3575,4 +4024,13 @@ document.addEventListener('DOMContentLoaded', () => {
   document.addEventListener('keydown', handleMenuKey);
   renderMenuSelection();
   renderGameOverMenuSelection();
+  
+  // 성능 모니터링 프레임 업데이트 시작 (1초마다, 안전하게)
+  setInterval(() => {
+    try {
+      updatePerformanceMonitor();
+    } catch (error) {
+      console.warn('성능 모니터링 업데이트 오류:', error);
+    }
+  }, 1000);
 });
