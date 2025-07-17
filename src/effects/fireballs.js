@@ -1,12 +1,12 @@
 import * as THREE from 'three';
 
 class FireballEmitter {
-  constructor(scene, origin, color = 0xff5500) {
+  constructor(scene, origin, color = 0xff5500, particleScale = 1) {
     this.scene = scene;
     this.origin = origin.clone();
     this.particles = [];
     this.alive = true;
-    this.particleGeometry = new THREE.SphereGeometry(0.02, 4, 4);
+    this.particleGeometry = new THREE.SphereGeometry(0.02 * particleScale, 4, 4);
     this.particleMaterial = new THREE.MeshBasicMaterial({ color: color, transparent: true, opacity: 0.7 });
   }
 
@@ -60,28 +60,28 @@ const fireEmitters = [];
 const iceEmitters = [];
 const lightningEmitters = [];
 
-function spawnFireParticles(scene, position, fireballId) {
+function spawnFireParticles(scene, position, fireballId, scale = 1) {
   let emitter = fireEmitters.find(e => e.ballId === fireballId);
   if (!emitter) {
-    emitter = new FireballEmitter(scene, position, 0xff5500);
+    emitter = new FireballEmitter(scene, position, 0xff5500, scale);
     emitter.ballId = fireballId;
     fireEmitters.push(emitter);
   }
   emitter.emit(position);
 }
-function spawnIceParticles(scene, position, iceballId) {
+function spawnIceParticles(scene, position, iceballId, scale = 1) {
   let emitter = iceEmitters.find(e => e.ballId === iceballId);
   if (!emitter) {
-    emitter = new FireballEmitter(scene, position, 0x66ccff);
+    emitter = new FireballEmitter(scene, position, 0x66ccff, scale);
     emitter.ballId = iceballId;
     iceEmitters.push(emitter);
   }
   emitter.emit(position);
 }
-function spawnLightningParticles(scene, position, lightningballId) {
+function spawnLightningParticles(scene, position, lightningballId, scale = 1) {
   let emitter = lightningEmitters.find(e => e.ballId === lightningballId);
   if (!emitter) {
-    emitter = new FireballEmitter(scene, position, 0xffff66);
+    emitter = new FireballEmitter(scene, position, 0xffff66, scale);
     emitter.ballId = lightningballId;
     lightningEmitters.push(emitter);
   }

@@ -3,11 +3,313 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Three.js WebXR Hand Tracking Demo</title>
+    <title>MAGIC DUEL XR</title>
     <link rel="stylesheet" href="/src/style.css" />
     <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@tweenjs/tween.js@18.6.4/dist/tween.umd.js"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Bungee&display=swap" rel="stylesheet">
   </head>
   <body>
+    <div id="player-hp-ui">
+      <div class="mc-hp-bar">
+        <div class="mc-hp-fill"></div>
+      </div>
+      <div class="mc-hp-label">HP: 100 / 100</div>
+    </div>
+    <div id="main-menu">
+      <div class="menu-title">MAGIC DUEL XR</div>
+      <div class="mc-menu-list">
+        <div class="mc-menu-item selected">게임시작</div>
+        <div class="mc-menu-item">튜토리얼</div>
+        <div class="mc-menu-item">스코어</div>
+        <div class="mc-menu-item">제작자</div>
+      </div>
+    </div>
+    <div id="game-over-screen">
+      <div class="game-over-title">GAME OVER</div>
+      <div class="game-over-subtitle">당신은 쓰러졌습니다</div>
+      <div class="mc-gameover-menu">
+        <div class="mc-gameover-item selected">다시 시작</div>
+        <div class="mc-gameover-item">메인 메뉴</div>
+      </div>
+    </div>
+    <style>
+              @import url('https://fonts.googleapis.com/css2?family=Press+Start+2P&family=Bungee:wght@400&display=swap');
+      
+      #player-hp-ui {
+        position: fixed;
+        top: 18px;
+        left: 24px;
+        z-index: 9999;
+        width: 320px;
+        height: 54px;
+        display: flex;
+        flex-direction: column;
+        align-items: flex-start;
+        background: none;
+        pointer-events: none;
+        user-select: none;
+      }
+      .mc-hp-bar {
+        width: 260px;
+        height: 28px;
+        background: #222;
+        border: 4px solid #111;
+        box-sizing: border-box;
+        margin-bottom: 4px;
+        image-rendering: pixelated;
+        position: relative;
+        overflow: hidden;
+      }
+      .mc-hp-fill {
+        height: 100%;
+        width: 100%; /* JS에서 HP에 따라 변경 */
+        background:
+          repeating-linear-gradient(45deg, #aaff77 0 4px, #7cfb4a 4px 8px),
+          #7cfb4a;
+        /* 픽셀 체크무늬 + 단색 */
+        /* box-shadow, 그라데이션 제거 */
+        transition: width 0.18s cubic-bezier(.4,2,.6,1);
+        image-rendering: pixelated;
+      }
+      .mc-hp-label {
+        font-family: 'Press Start 2P', 'Consolas', 'monospace';
+        font-size: 1.1em;
+        color: #e6e6e6;
+        margin-top: 2px;
+        margin-left: 2px;
+        letter-spacing: 0.04em;
+        text-shadow: 1px 1px 0 #111, 2px 2px 0 #000;
+      }
+      #main-menu {
+        position: fixed;
+        top: 0; left: 0; right: 0; bottom: 0;
+        width: 100vw; height: 100vh;
+        background: 
+          linear-gradient(180deg, #4a7c2a 0%, #5d8f3a 25%, #6ba047 50%, #8b6f47 75%, #a0825a 100%),
+          radial-gradient(circle at 20% 20%, rgba(106, 160, 71, 0.3) 0%, transparent 50%),
+          radial-gradient(circle at 80% 80%, rgba(139, 111, 71, 0.3) 0%, transparent 50%),
+          radial-gradient(circle at 60% 40%, rgba(93, 143, 58, 0.2) 0%, transparent 50%);
+        background-size: 100% 100%, 200px 200px, 150px 150px, 300px 300px;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        z-index: 10000;
+        position: relative;
+      }
+      
+      #main-menu::before {
+        content: '';
+        position: absolute;
+        top: 0; left: 0; right: 0; bottom: 0;
+        background: 
+          repeating-linear-gradient(
+            0deg,
+            rgba(255,255,255,0.05) 0px,
+            rgba(255,255,255,0.05) 1px,
+            transparent 1px,
+            transparent 16px
+          ),
+          repeating-linear-gradient(
+            90deg,
+            rgba(255,255,255,0.05) 0px,
+            rgba(255,255,255,0.05) 1px,
+            transparent 1px,
+            transparent 16px
+          );
+        pointer-events: none;
+      }
+      .menu-title {
+        font-family: 'Bungee', 'VT323', 'Press Start 2P', 'Consolas', 'monospace';
+        font-size: 4em;
+        color: #e0e0e0;
+        background: #3b2e1a;
+        border: 8px solid #111;
+        padding: 0.18em 1.1em 0.08em 1.1em;
+        margin-bottom: 2.2em;
+        letter-spacing: -0.04em;
+        box-sizing: border-box;
+        text-align: center;
+        text-transform: uppercase;
+        position: relative;
+        /* 두꺼운 검정 외곽선, 각진, 그림자 없음 */
+        /* 아래/오른쪽 입체감(그림자) */
+        filter: drop-shadow(6px 10px 0 #111) drop-shadow(0 0 0 #000);
+        /* 픽셀 느낌 강조 */
+        image-rendering: pixelated;
+        line-height: 1.05;
+      }
+      .mc-menu-list {
+        display: flex;
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 1.1em;
+      }
+      .mc-menu-item {
+        font-family: 'Bungee', 'VT323', 'Press Start 2P', 'Consolas', 'monospace';
+        font-size: 2.6em;
+        font-weight: 800;
+        color: #e0e0e0;
+        background: #3b2e1a;
+        border: 6px solid #111;
+        box-sizing: border-box;
+        padding: 0.18em 1.5em 0.08em 1.5em;
+        margin-left: 0;
+        min-width: 420px;
+        text-align: left;
+        text-transform: uppercase;
+        cursor: pointer;
+        user-select: none;
+        letter-spacing: -0.03em;
+        transition: background 0.12s, color 0.12s, filter 0.12s, transform 0.12s;
+        filter: drop-shadow(4px 7px 0 #111);
+        border-radius: 0;
+        position: relative;
+      }
+      .mc-menu-item.selected {
+        background: #aaff77;
+        color: #222;
+        border-color: #222;
+        filter: drop-shadow(0 0 0 #111) drop-shadow(0 10px 0 #222);
+        transform: translateY(-6px) scale(1.04);
+        z-index: 2;
+      }
+      .mc-menu-item.selected::before {
+        content: '';
+        position: absolute;
+        left: 0.3em;
+        top: 50%;
+        transform: translateY(-50%);
+        width: 0;
+        height: 0;
+        border-left: 0.4em solid #222;
+        border-top: 0.3em solid transparent;
+        border-bottom: 0.3em solid transparent;
+      }
+      .mc-menu-item:hover:not(.selected) {
+        background: #5c4420;
+        color: #ffe066;
+      }
+      
+      /* === GAME OVER 화면 스타일 === */
+      #game-over-screen {
+        position: fixed;
+        top: 0; left: 0; right: 0; bottom: 0;
+        width: 100vw; height: 100vh;
+        background: linear-gradient(180deg, #1a0d0d 0%, #330000 50%, #1a0d0d 100%);
+        display: none;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        z-index: 15000;
+        animation: gameOverFadeIn 1s ease-in-out;
+      }
+      
+      @keyframes gameOverFadeIn {
+        from { opacity: 0; background: #000; }
+        to { opacity: 1; }
+      }
+      
+      .game-over-title {
+        font-family: 'Bungee', 'Press Start 2P', 'Consolas', 'monospace';
+        font-size: 5em;
+        font-weight: 900;
+        color: #ff3333;
+        text-align: center;
+        text-transform: uppercase;
+        letter-spacing: 0.1em;
+        margin-bottom: 0.5em;
+        text-shadow: 
+          4px 4px 0 #000,
+          8px 8px 0 #660000,
+          12px 12px 0 #330000;
+        filter: drop-shadow(0 0 20px #ff3333);
+        animation: gameOverPulse 2s infinite;
+      }
+      
+      @keyframes gameOverPulse {
+        0%, 100% { transform: scale(1); filter: drop-shadow(0 0 20px #ff3333); }
+        50% { transform: scale(1.05); filter: drop-shadow(0 0 30px #ff6666); }
+      }
+      
+      .game-over-subtitle {
+        font-family: 'Press Start 2P', 'Consolas', 'monospace';
+        font-size: 1.2em;
+        color: #cccccc;
+        text-align: center;
+        margin-bottom: 2em;
+        text-shadow: 2px 2px 0 #000;
+        animation: gameOverSubtitleFade 2s ease-in-out;
+      }
+      
+      @keyframes gameOverSubtitleFade {
+        from { opacity: 0; transform: translateY(20px); }
+        to { opacity: 1; transform: translateY(0); }
+      }
+      
+      .mc-gameover-menu {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 1em;
+        animation: gameOverMenuSlide 1.5s ease-out 0.5s both;
+      }
+      
+      @keyframes gameOverMenuSlide {
+        from { opacity: 0; transform: translateY(50px); }
+        to { opacity: 1; transform: translateY(0); }
+      }
+      
+      .mc-gameover-item {
+        font-family: 'Bungee', 'Press Start 2P', 'Consolas', 'monospace';
+        font-size: 1.8em;
+        font-weight: 800;
+        color: #cccccc;
+        background: #2a1a1a;
+        border: 4px solid #666;
+        box-sizing: border-box;
+        padding: 0.3em 2em;
+        min-width: 300px;
+        text-align: center;
+        text-transform: uppercase;
+        cursor: pointer;
+        user-select: none;
+        letter-spacing: 0.05em;
+        transition: all 0.2s ease;
+        filter: drop-shadow(3px 5px 0 #000);
+        position: relative;
+      }
+      
+      .mc-gameover-item.selected {
+        background: #ff3333;
+        color: #fff;
+        border-color: #fff;
+        filter: drop-shadow(0 0 0 #000) drop-shadow(0 8px 0 #990000);
+        transform: translateY(-4px) scale(1.02);
+        z-index: 2;
+      }
+      
+      .mc-gameover-item.selected::before {
+        content: '';
+        position: absolute;
+        left: 0.3em;
+        top: 50%;
+        transform: translateY(-50%);
+        width: 0;
+        height: 0;
+        border-left: 0.3em solid #fff;
+        border-top: 0.25em solid transparent;
+        border-bottom: 0.25em solid transparent;
+      }
+      
+      .mc-gameover-item:hover:not(.selected) {
+        background: #444;
+        color: #fff;
+        border-color: #999;
+        transform: translateY(-2px);
+      }
+    </style>
     <video id="webcam" autoplay playsinline style="display: none;"></video>
 
     <script type="module" src="/src/main.js"></script>

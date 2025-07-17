@@ -6,6 +6,9 @@ import { Hands } from '@mediapipe/hands';
 import { Camera as MediaPipeCamera } from '@mediapipe/camera_utils';
 import { PointerLockControls } from 'three/examples/jsm/controls/PointerLockControls.js';
 
+// TWEEN 라이브러리 (CDN에서 로드)
+const TWEEN = window.TWEEN;
+
 // Mediapipe HAND_CONNECTIONS (관절 연결 정보)
 const HAND_CONNECTIONS = [
   [0,1],[1,2],[2,3],[3,4],      // 엄지
@@ -60,6 +63,18 @@ let flyingAuroraBalls = [];
 let auroraBallReadyTime = 0;
 
 let dragonMixer; // <--- 전역 선언 추가
+
+let bossMoveTarget = null;
+let bossMoveTimer = 0;
+
+// === [보스 등장 시퀀스 관련 변수] ===
+let bossSpawnTimer = 0;
+let bossSpawnStarted = false;
+let bossSpawnPhase = 'waiting'; // 'waiting', 'portal', 'spawning', 'descending', 'complete'
+let bossSpawnEffects = [];
+let bossSpawnStartTime = 0;
+let bossSpawnPortal = null;
+let portalParticles = [];
 
 let groundY = 0; // 지형 최고점 Y값(전역)
 let landscape = null; // 지형 mesh 전역 참조
@@ -187,6 +202,19 @@ let playerHitFlash = 0;
 let playerShakeTime = 0;
 let shakeOffset = { x: 0, y: 0, z: 0 };
 
+// === [2D HP UI 업데이트 함수 추가] ===
+function updatePlayerHpUI() {
+  const fill = document.querySelector('#player-hp-ui .mc-hp-fill');
+  const label = document.querySelector('#player-hp-ui .mc-hp-label');
+  if (fill) {
+    const ratio = Math.max(0, playerHP) / playerMaxHP;
+    fill.style.width = (ratio * 100) + '%';
+  }
+  if (label) {
+    label.textContent = `HP: ${playerHP} / ${playerMaxHP}`;
+  }
+}
+
 function createPlayerHpBar() {
   if (!player) return;
   // HP바 배경
@@ -205,12 +233,16 @@ function createPlayerHpBar() {
   playerHpBarMesh.renderOrder = 1001;
   playerHpBarMesh.material.depthTest = false;
   player.add(playerHpBarMesh);
+  updatePlayerHpUI(); // 2D HP UI도 초기화
 }
 
 function updatePlayerHpBar() {
   if (!playerHpBarMesh) return;
-  const hpRatio = Math.max(0, Math.min(1, playerHP / playerMaxHP));
-  playerHpBarMesh.scale.x = Math.max(0.01, hpRatio);
+  const hpRatio = Math.max(0, playerHP) / playerMaxHP;
+  playerHpBarMesh.scale.x = hpRatio;
+  playerHpBarMesh.position.x = -(1 - hpRatio) * 1;
+  // === 2D HP UI도 갱신 ===
+  updatePlayerHpUI();
 }
 
 function damagePlayer(amount, pos) {
@@ -227,32 +259,57 @@ function damagePlayer(amount, pos) {
     isPlayerDead = true;
     onPlayerDeath();
   }
+  // === 2D HP UI도 갱신 ===
+  updatePlayerHpUI();
 }
 
 function spawnPlayerDamageText(position, value = 10) {
-  // 텍스트를 그린 canvas texture sprite
+  // 카메라 12시 방향에 고정된 데미지 텍스트 생성
   const canvas = document.createElement('canvas');
-  canvas.width = 256;
-  canvas.height = 128;
+  canvas.width = 512;
+  canvas.height = 256;
   const ctx = canvas.getContext('2d');
-  ctx.font = 'bold 80px Arial';
+  ctx.font = 'bold 120px Arial';
   ctx.textAlign = 'center';
   ctx.textBaseline = 'middle';
   ctx.shadowColor = '#ff0033';
-  ctx.shadowBlur = 16;
+  ctx.shadowBlur = 20;
   ctx.fillStyle = '#fff';
-  ctx.fillText('-' + value.toString(), 128, 64);
+  ctx.fillText('-' + value.toString(), 256, 128);
   ctx.strokeStyle = '#ff0033';
-  ctx.lineWidth = 8;
-  ctx.strokeText('-' + value.toString(), 128, 64);
+  ctx.lineWidth = 12;
+  ctx.strokeText('-' + value.toString(), 256, 128);
+  
   const texture = new THREE.CanvasTexture(canvas);
-  const material = new THREE.SpriteMaterial({ map: texture, transparent: true });
+  const material = new THREE.SpriteMaterial({ 
+    map: texture, 
+    transparent: true,
+    depthTest: false,
+    depthWrite: false
+  });
   const sprite = new THREE.Sprite(material);
-  sprite.position.copy(position);
-  sprite.position.y += 2.7;
-  sprite.scale.set(2.2, 1.1, 1); // [더 크고 튀게]
+  
+  // 카메라 앞쪽 12시 방향에 위치 설정
+  const cameraDirection = new THREE.Vector3();
+  camera.getWorldDirection(cameraDirection);
+  
+  // 카메라 위쪽 방향 벡터
+  const cameraUp = new THREE.Vector3(0, 1, 0);
+  cameraUp.applyQuaternion(camera.quaternion);
+  
+  // 카메라 앞쪽 + 위쪽으로 위치 설정 (10% 아래로)
+  const damagePosition = camera.position.clone();
+  damagePosition.add(cameraDirection.multiplyScalar(3)); // 앞쪽으로 3만큼
+  damagePosition.add(cameraUp.multiplyScalar(1.35)); // 위쪽으로 1.35만큼 (1.5에서 10% 감소)
+  
+  sprite.position.copy(damagePosition);
+  sprite.scale.set(1.5, 0.75, 1); // 크기를 절반으로 줄임
+  
+  // 항상 카메라를 바라보도록 설정
+  sprite.lookAt(camera.position);
+  
   scene.add(sprite);
-  damageTexts.push({ sprite, time: 0 });
+  damageTexts.push({ sprite, time: 0, isPlayerDamage: true });
 }
 
 function triggerPlayerHitEffect() {
@@ -266,32 +323,863 @@ function triggerPlayerHitEffect() {
 }
 
 function onPlayerDeath() {
-  // 간단한 게임 오버 처리
-  alert('플레이어가 쓰러졌습니다!');
-  // TODO: 리스폰, 재시작 등 추가 가능
+  // 게임 일시 정지 (보스 공격 중단)
+  isPlayerDead = true;
+  
+  // 플레이어 죽음 파티클 효과
+  spawnPlayerDeathParticles();
+  
+  // 카메라 강한 흔들림 효과
+  playerShakeTime = 3.0;
+  
+  // 화면 암전 효과
+  renderer.setClearColor(0x000000, 0.8);
+  
+  // 1.5초 후 게임 오버 화면 표시
+  setTimeout(() => {
+    showGameOverScreen();
+    renderer.setClearColor(0x18132a, 1);
+  }, 1500);
+  
+  updatePlayerHpUI(); // 2D HP UI도 갱신
+}
+
+function spawnPlayerDeathParticles() {
+  if (!player) return;
+  
+  // 플레이어 위치에서 파티클 폭발
+  const pos = player.position.clone();
+  
+  // 붉은 파티클 (피)
+  for (let i = 0; i < 30; i++) {
+    const geom = new THREE.SphereGeometry(0.05, 6, 6);
+    const mat = new THREE.MeshBasicMaterial({ 
+      color: 0xff0000, 
+      emissive: 0x660000, 
+      transparent: true, 
+      opacity: 0.8 
+    });
+    const mesh = new THREE.Mesh(geom, mat);
+    mesh.position.copy(pos);
+    mesh.position.y += Math.random() * 2; // 높이 랜덤
+    scene.add(mesh);
+    
+    const velocity = new THREE.Vector3(
+      (Math.random() - 0.5) * 0.4,
+      Math.random() * 0.3 + 0.1,
+      (Math.random() - 0.5) * 0.4
+    );
+    explosionParticles.push({ 
+      mesh, 
+      velocity, 
+      life: 1.0 + Math.random() * 0.5 
+    });
+  }
+  
+  // 어두운 연기 파티클
+  for (let i = 0; i < 20; i++) {
+    const geom = new THREE.SphereGeometry(0.08, 6, 6);
+    const mat = new THREE.MeshBasicMaterial({ 
+      color: 0x333333, 
+      transparent: true, 
+      opacity: 0.6 
+    });
+    const mesh = new THREE.Mesh(geom, mat);
+    mesh.position.copy(pos);
+    mesh.position.y += Math.random() * 1.5;
+    scene.add(mesh);
+    
+    const velocity = new THREE.Vector3(
+      (Math.random() - 0.5) * 0.2,
+      Math.random() * 0.2 + 0.05,
+      (Math.random() - 0.5) * 0.2
+    );
+    explosionParticles.push({ 
+      mesh, 
+      velocity, 
+      life: 1.5 + Math.random() * 0.8 
+    });
+  }
+}
+
+function showGameOverScreen() {
+  const gameOverScreen = document.getElementById('game-over-screen');
+  if (gameOverScreen) {
+    gameOverScreen.style.display = 'flex';
+    
+    // 게임 오버 사운드 효과 (시각적 플래시)
+    const flash = { intensity: 0 };
+    const flashTween = new TWEEN.Tween(flash)
+      .to({ intensity: 1 }, 300)
+      .onUpdate(() => {
+        renderer.setClearColor(0xff0000, flash.intensity * 0.5);
+      })
+      .onComplete(() => {
+        const fadeOut = new TWEEN.Tween(flash)
+          .to({ intensity: 0 }, 1000)
+          .onUpdate(() => {
+            renderer.setClearColor(0xff0000, flash.intensity * 0.5);
+          })
+          .onComplete(() => {
+            renderer.setClearColor(0x18132a, 1);
+          });
+        fadeOut.start();
+      });
+    flashTween.start();
+  }
+}
+
+function hideGameOverScreen() {
+  const gameOverScreen = document.getElementById('game-over-screen');
+  if (gameOverScreen) {
+    gameOverScreen.style.display = 'none';
+  }
+}
+
+function restartGame() {
+  // 게임 오버 화면 숨기기
+  hideGameOverScreen();
+  
+  // 게임 상태 리셋
+  resetGameState();
+  
+  // 기존 타이머 취소
+  if (bossSpawnTimeout) {
+    clearTimeout(bossSpawnTimeout);
+  }
+  
+  // 보스 등장 시퀀스 재시작 (3초 후)
+  bossSpawnTimeout = setTimeout(() => {
+    startBossSpawnSequence();
+    bossSpawnTimeout = null;
+  }, 3000);
+}
+
+function returnToMainMenu() {
+  // 게임 오버 화면 숨기기
+  hideGameOverScreen();
+  
+  // 메인 메뉴 표시
+  const mainMenu = document.getElementById('main-menu');
+  if (mainMenu) {
+    mainMenu.style.display = 'flex';
+  }
+  
+  // 게임 상태 완전 초기화
+  resetGameState();
 }
 
 function createPlayer() {
   const geometry = new THREE.BoxGeometry(1, 2, 1);
   const material = new THREE.MeshStandardMaterial({ color: 0x55ff55, transparent: true, opacity: 0 }); // 완전 투명
   player = new THREE.Mesh(geometry, material);
-  player.position.set(0, 2, 0);
+  // 초기 위치는 groundY가 설정된 후 landscape 로드 콜백에서 설정됨
+  player.position.set(0, groundY + 1, 0);
   player.castShadow = true;
   player.receiveShadow = true;
   scene.add(player);
   createPlayerHpBar();
+  updatePlayerHpUI(); // 2D HP UI도 초기화
+}
+
+// === [보스 등장 시퀀스 함수들] ===
+function startBossSpawnSequence() {
+  if (bossSpawnStarted) return;
+  bossSpawnStarted = true;
+  bossSpawnPhase = 'portal';
+  bossSpawnStartTime = performance.now();
+  
+  // 먼저 포털 생성
+  createBossSpawnPortal();
+  
+  // 2초 후 하늘 어두워지기 시작
+  setTimeout(() => {
+    bossSpawnPhase = 'spawning';
+    
+    // 하늘이 어두워지는 효과
+    const sky = scene.children.find(child => child.geometry && child.geometry.type === 'SphereGeometry');
+    if (sky) {
+      const originalColor = sky.material.color.clone();
+      const targetColor = new THREE.Color(0x2a1a3a); // 어두운 보라색
+      
+      const tween = { t: 0 };
+      const skyTween = new TWEEN.Tween(tween)
+        .to({ t: 1 }, 2000)
+        .onUpdate(() => {
+          sky.material.color.lerpColors(originalColor, targetColor, tween.t);
+        });
+      skyTween.start();
+    }
+    
+    // 번개 효과 생성
+    createLightningEffects();
+    
+    // 포털 강화
+    enhancePortal();
+  }, 2000);
+  
+  // 5초 후 보스 등장
+  setTimeout(() => {
+    spawnBoss();
+  }, 5000);
+}
+
+function createLightningEffects() {
+  for (let i = 0; i < 5; i++) {
+    setTimeout(() => {
+      const lightning = createLightning();
+      bossSpawnEffects.push(lightning);
+      
+      // 번개 소리 효과 (시각적 플래시)
+      const flash = { intensity: 0 };
+      const flashTween = new TWEEN.Tween(flash)
+        .to({ intensity: 1 }, 100)
+        .onUpdate(() => {
+          renderer.setClearColor(0xffffff, flash.intensity * 0.3);
+        })
+        .onComplete(() => {
+          const fadeOut = new TWEEN.Tween(flash)
+            .to({ intensity: 0 }, 300)
+            .onUpdate(() => {
+              renderer.setClearColor(0xffffff, flash.intensity * 0.3);
+            })
+            .onComplete(() => {
+              renderer.setClearColor(0x18132a, 1);
+            });
+          fadeOut.start();
+        });
+      flashTween.start();
+    }, i * 800);
+  }
+}
+
+function createLightning() {
+  const geometry = new THREE.CylinderGeometry(0.1, 0.1, 50, 8);
+  const material = new THREE.MeshBasicMaterial({ 
+    color: 0xffffff, 
+    emissive: 0x9999ff,
+    transparent: true,
+    opacity: 0.8
+  });
+  const lightning = new THREE.Mesh(geometry, material);
+  
+  // 랜덤 위치에 번개 생성
+  lightning.position.set(
+    (Math.random() - 0.5) * 100,
+    25,
+    (Math.random() - 0.5) * 100
+  );
+  
+  scene.add(lightning);
+  
+  // 번개 애니메이션 (깜빡임)
+  const flash = { opacity: 0.8 };
+  const flashTween = new TWEEN.Tween(flash)
+    .to({ opacity: 0 }, 200)
+    .onUpdate(() => {
+      lightning.material.opacity = flash.opacity;
+    })
+    .onComplete(() => {
+      scene.remove(lightning);
+    });
+  flashTween.start();
+  
+  return lightning;
+}
+
+function createBossSpawnPortal() {
+  // 포털 위치 (보스가 나타날 자리)
+  const portalPosition = new THREE.Vector3(0, 21, -10);
+  
+  // 메인 포털 원기둥 (외부 링)
+  const outerRingGeometry = new THREE.RingGeometry(8, 10, 32);
+  const outerRingMaterial = new THREE.MeshBasicMaterial({ 
+    color: 0x6644ff,
+    transparent: true,
+    opacity: 0.7,
+    side: THREE.DoubleSide
+  });
+  const outerRing = new THREE.Mesh(outerRingGeometry, outerRingMaterial);
+  outerRing.rotation.x = -Math.PI / 2; // 수평으로 회전
+  outerRing.position.copy(portalPosition);
+  scene.add(outerRing);
+  
+  // 내부 포털 원기둥 (내부 링)
+  const innerRingGeometry = new THREE.RingGeometry(5, 7, 32);
+  const innerRingMaterial = new THREE.MeshBasicMaterial({ 
+    color: 0x9966ff,
+    transparent: true,
+    opacity: 0.8,
+    side: THREE.DoubleSide
+  });
+  const innerRing = new THREE.Mesh(innerRingGeometry, innerRingMaterial);
+  innerRing.rotation.x = -Math.PI / 2;
+  innerRing.position.copy(portalPosition);
+  scene.add(innerRing);
+  
+  // 중앙 코어 (빛나는 중심)
+  const coreGeometry = new THREE.CircleGeometry(4, 32);
+  const coreMaterial = new THREE.MeshBasicMaterial({ 
+    color: 0xccaaff,
+    transparent: true,
+    opacity: 0.6,
+    side: THREE.DoubleSide
+  });
+  const core = new THREE.Mesh(coreGeometry, coreMaterial);
+  core.rotation.x = -Math.PI / 2;
+  core.position.copy(portalPosition);
+  scene.add(core);
+  
+  // 수직 원기둥 (포털 기둥)
+  const cylinderGeometry = new THREE.CylinderGeometry(10, 10, 30, 32, 1, true);
+  const cylinderMaterial = new THREE.MeshBasicMaterial({ 
+    color: 0x4433aa,
+    transparent: true,
+    opacity: 0.3,
+    side: THREE.DoubleSide
+  });
+  const cylinder = new THREE.Mesh(cylinderGeometry, cylinderMaterial);
+  cylinder.position.set(portalPosition.x, portalPosition.y, portalPosition.z);
+  scene.add(cylinder);
+  
+  // 포털 객체 저장
+  bossSpawnPortal = {
+    outerRing: outerRing,
+    innerRing: innerRing,
+    core: core,
+    cylinder: cylinder,
+    startTime: performance.now()
+  };
+  
+  // 포털 애니메이션 시작
+  animatePortal();
+  
+  // 포털 파티클 생성
+  createPortalParticles();
+}
+
+function animatePortal() {
+  if (!bossSpawnPortal) return;
+  
+  // 링들 회전 애니메이션
+  const rotationTween = { rotation: 0 };
+  const rotateTween = new TWEEN.Tween(rotationTween)
+    .to({ rotation: Math.PI * 2 }, 4000)
+    .repeat(Infinity)
+    .onUpdate(() => {
+      if (bossSpawnPortal.outerRing) {
+        bossSpawnPortal.outerRing.rotation.z = rotationTween.rotation;
+      }
+      if (bossSpawnPortal.innerRing) {
+        bossSpawnPortal.innerRing.rotation.z = -rotationTween.rotation * 1.5;
+      }
+    });
+  rotateTween.start();
+  
+  // 포털 펄스 효과
+  const pulse = { scale: 1 };
+  const pulseTween = new TWEEN.Tween(pulse)
+    .to({ scale: 1.1 }, 1000)
+    .repeat(Infinity)
+    .yoyo(true)
+    .easing(TWEEN.Easing.Sinusoidal.InOut)
+    .onUpdate(() => {
+      if (bossSpawnPortal.core) {
+        bossSpawnPortal.core.scale.set(pulse.scale, pulse.scale, pulse.scale);
+      }
+    });
+  pulseTween.start();
+}
+
+function createPortalParticles() {
+  if (!bossSpawnPortal) return;
+  
+  const portalPosition = new THREE.Vector3(0, 21, -10);
+  
+  // 포털 주변 파티클 생성
+  for (let i = 0; i < 20; i++) {
+    setTimeout(() => {
+      const geometry = new THREE.SphereGeometry(0.2, 8, 8);
+      const material = new THREE.MeshBasicMaterial({ 
+        color: 0x9966ff,
+        transparent: true,
+        opacity: 0.8
+      });
+      const particle = new THREE.Mesh(geometry, material);
+      
+      // 포털 주변 원형으로 배치
+      const angle = (i / 20) * Math.PI * 2;
+      const radius = 12 + Math.random() * 3;
+      particle.position.set(
+        portalPosition.x + Math.cos(angle) * radius,
+        portalPosition.y + (Math.random() - 0.5) * 5,
+        portalPosition.z + Math.sin(angle) * radius
+      );
+      
+      scene.add(particle);
+      
+      // 파티클이 포털 중심으로 나선형으로 이동
+      const spiralVelocity = {
+        angle: angle,
+        radius: radius,
+        y: particle.position.y,
+        speed: 0.02
+      };
+      
+      portalParticles.push({
+        mesh: particle,
+        velocity: spiralVelocity,
+        life: 10.0,
+        maxLife: 10.0
+      });
+    }, i * 200);
+  }
+}
+
+function enhancePortal() {
+  if (!bossSpawnPortal) return;
+  
+  // 포털 강화 - 더 밝고 크게
+  const enhanceTween = { intensity: 1 };
+  const enhance = new TWEEN.Tween(enhanceTween)
+    .to({ intensity: 2 }, 1500)
+    .onUpdate(() => {
+      if (bossSpawnPortal.outerRing) {
+        bossSpawnPortal.outerRing.material.opacity = 0.7 * enhanceTween.intensity;
+      }
+      if (bossSpawnPortal.innerRing) {
+        bossSpawnPortal.innerRing.material.opacity = 0.8 * enhanceTween.intensity;
+      }
+      if (bossSpawnPortal.core) {
+        bossSpawnPortal.core.material.opacity = 0.6 * enhanceTween.intensity;
+      }
+      if (bossSpawnPortal.cylinder) {
+        bossSpawnPortal.cylinder.material.opacity = 0.3 * enhanceTween.intensity;
+      }
+    });
+  enhance.start();
+  
+  // 추가 강화 파티클
+  const portalPosition = new THREE.Vector3(0, 21, -10);
+  for (let i = 0; i < 30; i++) {
+    setTimeout(() => {
+      const geometry = new THREE.SphereGeometry(0.3, 8, 8);
+      const material = new THREE.MeshBasicMaterial({ 
+        color: 0xffaa66,
+        emissive: 0xff6600,
+        transparent: true,
+        opacity: 0.9
+      });
+      const particle = new THREE.Mesh(geometry, material);
+      
+      // 포털 중심에서 바깥으로 폭발
+      particle.position.copy(portalPosition);
+      scene.add(particle);
+      
+      const velocity = new THREE.Vector3(
+        (Math.random() - 0.5) * 0.5,
+        (Math.random() - 0.5) * 0.3,
+        (Math.random() - 0.5) * 0.5
+      );
+      
+      portalParticles.push({
+        mesh: particle,
+        velocity: velocity,
+        life: 3.0,
+        maxLife: 3.0
+      });
+    }, i * 50);
+  }
+}
+
+function updatePortalParticles() {
+  for (let i = portalParticles.length - 1; i >= 0; i--) {
+    const particle = portalParticles[i];
+    
+    if (particle.velocity.angle !== undefined) {
+      // 나선형 이동
+      particle.velocity.angle += particle.velocity.speed;
+      particle.velocity.radius -= 0.05;
+      
+      if (particle.velocity.radius > 0) {
+        particle.mesh.position.x = Math.cos(particle.velocity.angle) * particle.velocity.radius;
+        particle.mesh.position.z = Math.sin(particle.velocity.angle) * particle.velocity.radius;
+        particle.mesh.position.y = 21 + Math.sin(particle.velocity.angle * 3) * 2;
+      }
+    } else {
+      // 직선 이동
+      particle.mesh.position.add(particle.velocity);
+    }
+    
+    // 수명 감소
+    particle.life -= 1/60;
+    
+    // 페이드 아웃
+    const alpha = particle.life / particle.maxLife;
+    if (particle.mesh.material) {
+      particle.mesh.material.opacity = alpha;
+    }
+    
+    // 수명이 다하면 제거
+    if (particle.life <= 0) {
+      scene.remove(particle.mesh);
+      portalParticles.splice(i, 1);
+    }
+  }
+}
+
+function destroyPortal() {
+  if (!bossSpawnPortal) return;
+  
+  // 포털 페이드 아웃
+  const fadeOut = { opacity: 1 };
+  const fade = new TWEEN.Tween(fadeOut)
+    .to({ opacity: 0 }, 1000)
+    .onUpdate(() => {
+      if (bossSpawnPortal.outerRing) {
+        bossSpawnPortal.outerRing.material.opacity = 0.7 * fadeOut.opacity;
+      }
+      if (bossSpawnPortal.innerRing) {
+        bossSpawnPortal.innerRing.material.opacity = 0.8 * fadeOut.opacity;
+      }
+      if (bossSpawnPortal.core) {
+        bossSpawnPortal.core.material.opacity = 0.6 * fadeOut.opacity;
+      }
+      if (bossSpawnPortal.cylinder) {
+        bossSpawnPortal.cylinder.material.opacity = 0.3 * fadeOut.opacity;
+      }
+    })
+    .onComplete(() => {
+      // 포털 제거
+      if (bossSpawnPortal.outerRing) scene.remove(bossSpawnPortal.outerRing);
+      if (bossSpawnPortal.innerRing) scene.remove(bossSpawnPortal.innerRing);
+      if (bossSpawnPortal.core) scene.remove(bossSpawnPortal.core);
+      if (bossSpawnPortal.cylinder) scene.remove(bossSpawnPortal.cylinder);
+      bossSpawnPortal = null;
+    });
+  fade.start();
+}
+
+function spawnBoss() {
+  bossSpawnPhase = 'descending';
+  
+  // 포털 마지막 강화 (보스 등장 직전)
+  if (bossSpawnPortal) {
+    const finalEnhance = { intensity: 1 };
+    const finalTween = new TWEEN.Tween(finalEnhance)
+      .to({ intensity: 3 }, 800)
+      .onUpdate(() => {
+        if (bossSpawnPortal.outerRing) {
+          bossSpawnPortal.outerRing.material.opacity = Math.min(1, 0.7 * finalEnhance.intensity);
+        }
+        if (bossSpawnPortal.innerRing) {
+          bossSpawnPortal.innerRing.material.opacity = Math.min(1, 0.8 * finalEnhance.intensity);
+        }
+        if (bossSpawnPortal.core) {
+          bossSpawnPortal.core.material.opacity = Math.min(1, 0.6 * finalEnhance.intensity);
+        }
+        if (bossSpawnPortal.cylinder) {
+          bossSpawnPortal.cylinder.material.opacity = Math.min(1, 0.3 * finalEnhance.intensity);
+        }
+      });
+    finalTween.start();
+  }
+  
+  // 보스 로딩
+  const loader = new GLTFLoader();
+  loader.load('/dragon.glb', (gltf) => {
+    boss = gltf.scene;
+    
+    // 보스를 포털 중심에서 시작 (포털을 통해 나오는 것처럼)
+    boss.position.set(0, 35, -10); // 포털 중심 높이에서 시작
+    boss.scale.set(5, 5, 5);
+    boss.maxHP = 100;
+    boss.currentHP = 100;
+    boss.lastHitTime = 0;
+    
+    // 보스 초기 투명도 설정
+    boss.traverse((child) => {
+      if (child.isMesh) {
+        child.castShadow = true;
+        child.receiveShadow = true;
+        bossOriginalMaterials.push({ mesh: child, material: child.material.clone() });
+        
+        // 초기에는 투명하게
+        if (child.material) {
+          child.material.transparent = true;
+          child.material.opacity = 0;
+        }
+      }
+    });
+    
+    scene.add(boss);
+    
+    // 보스 등장 애니메이션
+    animateBossEntrance();
+    
+    // fly 애니메이션 적용
+    if (gltf.animations && gltf.animations.length) {
+      dragonMixer = new THREE.AnimationMixer(boss);
+      const flyClip = gltf.animations.find(a => a.name.toLowerCase().includes('fly')) || gltf.animations[0];
+      if (flyClip) {
+        const action = dragonMixer.clipAction(flyClip);
+        action.reset();
+        action.play();
+      }
+    }
+  });
+}
+
+function animateBossEntrance() {
+  // 보스 하강 애니메이션
+  const targetY = 21;
+  const startY = 35;
+  
+  const descentTween = new TWEEN.Tween(boss.position)
+    .to({ y: targetY }, 3000)
+    .easing(TWEEN.Easing.Cubic.Out)
+    .onUpdate(() => {
+      // 하강하면서 서서히 나타나기
+      const progress = (startY - boss.position.y) / (startY - targetY);
+      boss.traverse((child) => {
+        if (child.isMesh && child.material) {
+          child.material.opacity = Math.min(1, progress * 1.5);
+        }
+      });
+      
+             // 보스가 하강하면서 포털도 함께 사라지게 (보스가 20% 하강했을 때부터 포털 사라짐 시작)
+      if (progress > 0.2 && bossSpawnPortal) {
+        const portalFadeProgress = (progress - 0.2) / 0.8; // 0.2~1.0을 0~1로 변환
+        const portalOpacity = Math.max(0, 1 - portalFadeProgress);
+        
+        if (bossSpawnPortal.outerRing) {
+          bossSpawnPortal.outerRing.material.opacity = 0.7 * portalOpacity;
+        }
+        if (bossSpawnPortal.innerRing) {
+          bossSpawnPortal.innerRing.material.opacity = 0.8 * portalOpacity;
+        }
+        if (bossSpawnPortal.core) {
+          bossSpawnPortal.core.material.opacity = 0.6 * portalOpacity;
+        }
+        if (bossSpawnPortal.cylinder) {
+          bossSpawnPortal.cylinder.material.opacity = 0.3 * portalOpacity;
+        }
+        
+        // 포털이 사라지면서 추가 파티클 효과
+        if (portalFadeProgress > 0.5) {
+          // 포털 붕괴 파티클 (간헐적으로 생성)
+          if (Math.random() < 0.1) {
+            const geometry = new THREE.SphereGeometry(0.4, 8, 8);
+            const material = new THREE.MeshBasicMaterial({ 
+              color: 0x6644ff,
+              transparent: true,
+              opacity: 0.8
+            });
+            const particle = new THREE.Mesh(geometry, material);
+            particle.position.set(
+              (Math.random() - 0.5) * 15,
+              21 + (Math.random() - 0.5) * 8,
+              -10 + (Math.random() - 0.5) * 15
+            );
+            scene.add(particle);
+            
+            const velocity = new THREE.Vector3(
+              (Math.random() - 0.5) * 0.3,
+              Math.random() * 0.2 + 0.1,
+              (Math.random() - 0.5) * 0.3
+            );
+            
+            portalParticles.push({
+              mesh: particle,
+              velocity: velocity,
+              life: 2.0,
+              maxLife: 2.0
+            });
+          }
+        }
+      }
+    })
+    .onComplete(() => {
+      bossSpawnPhase = 'complete';
+      createBossHPBar();
+      
+      // 포털 완전 제거
+      if (bossSpawnPortal) {
+        if (bossSpawnPortal.outerRing) scene.remove(bossSpawnPortal.outerRing);
+        if (bossSpawnPortal.innerRing) scene.remove(bossSpawnPortal.innerRing);
+        if (bossSpawnPortal.core) scene.remove(bossSpawnPortal.core);
+        if (bossSpawnPortal.cylinder) scene.remove(bossSpawnPortal.cylinder);
+        bossSpawnPortal = null;
+      }
+      
+      // 보스 등장 완료 이펙트
+      createBossSpawnCompleteEffect();
+    });
+  
+  descentTween.start();
+  
+  // 보스 등장 중 파티클 효과
+  createBossSpawnParticles();
+}
+
+function createBossHPBar() {
+  if (!boss) return;
+  
+  // boss bounding box
+  bossBox = new THREE.Box3().setFromObject(boss);
+  
+  // HP바와 배경 라인 생성 (보스 머리 위, anchor 중앙)
+  const bossWorldPos = new THREE.Vector3();
+  boss.getWorldPosition(bossWorldPos);
+  const barY = bossBox.max.y + 8;
+  
+  // HP바 (anchor 중앙)
+  const barGeom = new THREE.PlaneGeometry(barWidth, barHeight);
+  const barMat = new THREE.MeshBasicMaterial({ color: 0xff4444, transparent: true, opacity: 0.95 });
+  bossHpBarMesh = new THREE.Mesh(barGeom, barMat);
+  bossHpBarMesh.position.set(bossWorldPos.x, barY, bossWorldPos.z + 0.001);
+  bossHpBarMesh.renderOrder = 1000;
+  bossHpBarMesh.material.depthTest = false;
+  scene.add(bossHpBarMesh);
+}
+
+function createBossSpawnParticles() {
+  if (!boss) return;
+  
+  const particleCount = 30;
+  for (let i = 0; i < particleCount; i++) {
+    setTimeout(() => {
+      const geometry = new THREE.SphereGeometry(0.3, 8, 8);
+      const material = new THREE.MeshBasicMaterial({ 
+        color: 0xff4444, 
+        emissive: 0xff0000,
+        transparent: true,
+        opacity: 0.8
+      });
+      const particle = new THREE.Mesh(geometry, material);
+      
+      // 보스 주변에 파티클 생성
+      const angle = (i / particleCount) * Math.PI * 2;
+      const radius = 8 + Math.random() * 4;
+      particle.position.set(
+        boss.position.x + Math.cos(angle) * radius,
+        boss.position.y + (Math.random() - 0.5) * 10,
+        boss.position.z + Math.sin(angle) * radius
+      );
+      
+      scene.add(particle);
+      
+      // 파티클 애니메이션
+      const velocity = new THREE.Vector3(
+        (Math.random() - 0.5) * 0.2,
+        Math.random() * 0.1 + 0.05,
+        (Math.random() - 0.5) * 0.2
+      );
+      
+      bossSpawnEffects.push({
+        mesh: particle,
+        velocity: velocity,
+        life: 3.0,
+        maxLife: 3.0
+      });
+    }, i * 100);
+  }
+}
+
+function createBossSpawnCompleteEffect() {
+  if (!boss) return;
+  
+  // 보스 등장 완료 시 큰 폭발 효과
+  const pos = boss.position.clone();
+  for (let i = 0; i < 50; i++) {
+    const geometry = new THREE.SphereGeometry(0.5, 8, 8);
+    const material = new THREE.MeshBasicMaterial({ 
+      color: 0xffaa00, 
+      emissive: 0xff4400,
+      transparent: true,
+      opacity: 0.9
+    });
+    const particle = new THREE.Mesh(geometry, material);
+    particle.position.copy(pos);
+    
+    scene.add(particle);
+    
+    const velocity = new THREE.Vector3(
+      (Math.random() - 0.5) * 0.8,
+      (Math.random() - 0.5) * 0.8,
+      (Math.random() - 0.5) * 0.8
+    );
+    
+    bossSpawnEffects.push({
+      mesh: particle,
+      velocity: velocity,
+      life: 2.0,
+      maxLife: 2.0
+    });
+  }
+  
+  // 화면 흔들림 효과
+  shakeTime = 1.0;
+  
+  // 보스 등장 완료 플래시
+  const flash = { intensity: 0 };
+  const flashTween = new TWEEN.Tween(flash)
+    .to({ intensity: 1 }, 200)
+    .onUpdate(() => {
+      renderer.setClearColor(0xff4444, flash.intensity * 0.4);
+    })
+    .onComplete(() => {
+      const fadeOut = new TWEEN.Tween(flash)
+        .to({ intensity: 0 }, 800)
+        .onUpdate(() => {
+          renderer.setClearColor(0xff4444, flash.intensity * 0.4);
+        })
+        .onComplete(() => {
+          renderer.setClearColor(0x18132a, 1);
+        });
+      fadeOut.start();
+    });
+  flashTween.start();
+}
+
+function updateBossSpawnEffects() {
+  for (let i = bossSpawnEffects.length - 1; i >= 0; i--) {
+    const effect = bossSpawnEffects[i];
+    
+    if (effect.mesh && effect.velocity) {
+      // 파티클 이동
+      effect.mesh.position.add(effect.velocity);
+      
+      // 수명 감소
+      effect.life -= 1/60;
+      
+      // 페이드 아웃
+      const alpha = effect.life / effect.maxLife;
+      if (effect.mesh.material) {
+        effect.mesh.material.opacity = alpha;
+      }
+      
+      // 수명이 다하면 제거
+      if (effect.life <= 0) {
+        scene.remove(effect.mesh);
+        bossSpawnEffects.splice(i, 1);
+      }
+    }
+  }
 }
 
 function init() {
   // Scene
   scene = new THREE.Scene();
-  scene.background = new THREE.Color(0xb3e3ff); // 밝은 하늘색 낮 배경
+  // 마인크래프트 스타일 파란색 큐브맵 하늘 적용 (복구)
+  scene.background = createSolidColorCubeTexture(0x7ec0ee);
 
   // Fog
   scene.fog = new THREE.Fog(0xb3e3ff, 40, 120);
 
   // Camera
   camera = new THREE.PerspectiveCamera(60, window.innerWidth / window.innerHeight, 0.1, 1000);
+  // 초기 카메라 위치는 landscape 로드 후 설정됨
   camera.position.set(0, 8, 24);
 
   // jointSpheres/Lines/Labels를 scene 생성 직후에 추가
@@ -328,7 +1216,13 @@ function init() {
     const box = new THREE.Box3().setFromObject(landscape);
     groundY = box.max.y;
     if (player) {
+      // 맵 중앙에서 시작하도록 수정 (하늘에서 내려오지 않게)
       player.position.set(0, groundY + 1, 0); // 초록색 땅 위에 시작
+      // 카메라도 플레이어 위치로 이동
+      camera.position.set(0, groundY + 8, 24);
+      if (controls) {
+        controls.object.position.set(0, groundY + 1.2, 0);
+      }
     }
   });
 
@@ -343,51 +1237,8 @@ function init() {
   const sky = new THREE.Mesh(skyGeo, skyMat);
   scene.add(sky);
 
-  // boss.glb 캐릭터 추가 → dragon.glb로 교체
-  const loader = new GLTFLoader();
-  loader.load('/dragon.glb', (gltf) => {
-    boss = gltf.scene;
-    boss.position.set(0, 21, -10); // 하늘에, 기존보다 반만 낮게
-    boss.scale.set(5, 5, 5); // 2배 더 크게
-    boss.maxHP = 100;
-    boss.currentHP = 100;
-    boss.lastHitTime = 0;
-    boss.traverse((child) => {
-      if (child.isMesh) {
-        child.castShadow = true;
-        child.receiveShadow = true;
-        // 원본 재질 저장
-        bossOriginalMaterials.push({ mesh: child, material: child.material.clone() });
-      }
-    });
-    scene.add(boss);
-    // boss bounding box
-    bossBox = new THREE.Box3().setFromObject(boss);
-    // HP바와 배경 라인 생성 (보스 머리 위, anchor 중앙)
-    // barWidth, barHeight는 전역 사용
-    // 보스의 머리 위 좌표 계산 (max.y + 약간 위)
-    const bossWorldPos = new THREE.Vector3();
-    boss.getWorldPosition(bossWorldPos);
-    const barY = bossBox.max.y + 8;
-    // HP바 (anchor 중앙)
-    const barGeom = new THREE.PlaneGeometry(barWidth, barHeight);
-    const barMat = new THREE.MeshBasicMaterial({ color: 0xff4444, transparent: true, opacity: 0.95 });
-    bossHpBarMesh = new THREE.Mesh(barGeom, barMat);
-    bossHpBarMesh.position.set(bossWorldPos.x, barY, bossWorldPos.z + 0.001);
-    bossHpBarMesh.renderOrder = 1000;
-    bossHpBarMesh.material.depthTest = false;
-    scene.add(bossHpBarMesh);
-    // fly 애니메이션 적용
-    if (gltf.animations && gltf.animations.length) {
-      dragonMixer = new THREE.AnimationMixer(boss);
-      const flyClip = gltf.animations.find(a => a.name.toLowerCase().includes('fly')) || gltf.animations[0];
-      if (flyClip) {
-        const action = dragonMixer.clipAction(flyClip);
-        action.reset();
-        action.play();
-      }
-    }
-  });
+  // 보스 등장 시퀀스는 게임 시작 후 지연 로딩
+  // init() 함수에서는 보스를 즉시 로드하지 않음
 
   // Controls: PointerLockControls (1인칭/3인칭)
   controls = new PointerLockControls(camera, renderer.domElement);
@@ -468,6 +1319,7 @@ function init() {
       console.error('카메라 접근 실패:', err);
       alert('카메라 접근이 거부되었습니다. 브라우저 설정을 확인하세요.');
     });
+  updatePlayerHpUI(); // 2D HP UI도 초기화
 }
 
 function initHandSpheres() {
@@ -1479,12 +2331,48 @@ function animate() {
     // 데미지 텍스트 애니메이션
     for (let i = damageTexts.length - 1; i >= 0; i--) {
       const t = damageTexts[i];
-      t.sprite.position.y += 0.012;
-      t.sprite.material.opacity = 1 - t.time;
-      t.time += (renderer.xr.isPresenting ? 1/72 : 1/60);
-      if (t.time > 1) {
-        scene.remove(t.sprite);
-        damageTexts.splice(i, 1);
+      
+      if (t.isPlayerDamage) {
+        // 플레이어 데미지는 카메라 12시 방향에 고정
+        const cameraDirection = new THREE.Vector3();
+        camera.getWorldDirection(cameraDirection);
+        
+        const cameraUp = new THREE.Vector3(0, 1, 0);
+        cameraUp.applyQuaternion(camera.quaternion);
+        
+        const damagePosition = camera.position.clone();
+        damagePosition.add(cameraDirection.multiplyScalar(3));
+        damagePosition.add(cameraUp.multiplyScalar(1.35 + t.time * 0.25)); // 위로 천천히 이동 (시작점과 이동량 조정)
+        
+        t.sprite.position.copy(damagePosition);
+        t.sprite.lookAt(camera.position);
+        
+        // 크기 애니메이션 (처음에는 크게, 점점 작아짐 + 펄스 효과) - 전체 크기 절반
+        const baseScale = 1.5 * (1 + (1 - t.time) * 0.5);
+        const pulseScale = 1 + Math.sin(t.time * 20) * 0.1; // 빠른 펄스 효과
+        const finalScale = baseScale * pulseScale;
+        t.sprite.scale.set(finalScale, finalScale * 0.5, 1);
+      } else {
+        // 보스 데미지는 기존 방식
+        t.sprite.position.y += 0.012;
+      }
+      
+      if (t.isPlayerDamage) {
+        // 플레이어 데미지는 더 오래 지속 (1.5초)
+        t.sprite.material.opacity = Math.max(0, 1 - t.time / 1.5);
+        t.time += (renderer.xr.isPresenting ? 1/72 : 1/60);
+        if (t.time > 1.5) {
+          scene.remove(t.sprite);
+          damageTexts.splice(i, 1);
+        }
+      } else {
+        // 보스 데미지는 기존 방식
+        t.sprite.material.opacity = 1 - t.time;
+        t.time += (renderer.xr.isPresenting ? 1/72 : 1/60);
+        if (t.time > 1) {
+          scene.remove(t.sprite);
+          damageTexts.splice(i, 1);
+        }
       }
     }
     // 3D HP바 업데이트 (보스 머리 위)
@@ -1633,22 +2521,95 @@ function animate() {
     renderer.render(scene, camera);
     // 드래곤 fly 애니메이션 업데이트 및 플레이어(혹은 카메라) 바라보게
     if (dragonMixer) dragonMixer.update(1/60);
-    if (boss) {
-      const target = player ? player.position : camera.position;
-      const fixedY = 21; // 드래곤 y값 고정
-      boss.lookAt(target.x, fixedY + 1, target.z);
-      boss.rotateY(Math.PI);
+    // 플레이어를 바라보게
+    if (boss && player) {
+      boss.lookAt(player.position.x, boss.position.y, player.position.z);
+      boss.rotateY(Math.PI); // Y축 180도 회전
     }
     // === [보스 파이어볼 이동/충돌/데미지 처리] ===
     for (let i = bossProjectiles.length - 1; i >= 0; i--) {
       const f = bossProjectiles[i];
       if (!f.mesh) continue;
+      // === 0.4초 대기 후 발사 ===
+      if (f._delayTimer && f._delayTimer > 0) {
+        f._delayTimer -= (renderer.xr.isPresenting ? 1/72 : 1/60);
+        f.velocity.set(0, 0, 0);
+        // 대기 중에는 드래곤 머리 위치를 계속 따라감
+        if (f._attachedToBoss && boss) {
+          const bossWorldPos = new THREE.Vector3();
+          boss.getWorldPosition(bossWorldPos);
+          bossBox.setFromObject(boss);
+          const headY = bossBox.max.y + boss.scale.y * 1.2;
+          const headPos = new THREE.Vector3(bossWorldPos.x, headY, bossWorldPos.z);
+          const lookDir = new THREE.Vector3();
+          boss.getWorldDirection(lookDir);
+          const magicStart = headPos.add(lookDir.multiplyScalar(2 * (boss.scale.x || 1)));
+          f.mesh.position.copy(magicStart);
+        }
+        if (f._delayTimer <= 0 && f._attachedToBoss) {
+          f._attachedToBoss = false; // 이제부터는 따라가지 않음
+        }
+        if (f._delayTimer <= 0) {
+          // === 발사 순간, 실제 위치에서 플레이어를 향해 velocity 재계산 ===
+          const from = f.mesh.position.clone();
+          const to = player.position.clone();
+          const dir = to.sub(from).normalize();
+          f.velocity = dir.multiplyScalar(0.6 * (boss.scale.x || 1));
+          delete f._delayedVelocity;
+          delete f._delayTimer;
+        }
+      }
       f.mesh.position.add(f.velocity);
+      // === 파티클 이펙트 추가 ===
+      if (f._delayTimer && f._delayTimer > 0) {
+        // 대기 중에는 중앙에서만 파티클 생성
+        const scale = (f.mesh.scale.x || 1) * 4;
+        if (f.mesh.userData.type === 'fireball') {
+          spawnFireParticles(f.mesh.position, f.mesh.id, scale);
+        } else if (f.mesh.userData.type === 'iceball') {
+          spawnIceParticles(f.mesh.position, f.mesh.id, scale);
+        } else if (f.mesh.userData.type === 'lightningball') {
+          spawnLightningParticles(f.mesh.position, f.mesh.id, scale);
+        }
+      } else {
+        // 발사 후에는 여러 오프셋에서 파티클 생성
+        for (let repeat = 0; repeat < 5; repeat++) {
+          if (f.mesh && f.active) {
+            const scale = (f.mesh.scale.x || 1) * 4;
+            const radius = scale * 0.5;
+            const velocity = f.velocity.clone().normalize();
+            const up = new THREE.Vector3(0, 1, 0);
+            let side = new THREE.Vector3().crossVectors(velocity, up).normalize();
+            if (side.lengthSq() < 0.01) side = new THREE.Vector3(1, 0, 0);
+            const offsets = [
+              new THREE.Vector3(0, 0, 0),
+              velocity.clone().multiplyScalar(-radius),
+              side.clone().multiplyScalar(radius),
+              side.clone().multiplyScalar(-radius),
+            ];
+            for (const offsetVec of offsets) {
+              const pos = f.mesh.position.clone().add(offsetVec);
+              if (f.mesh.userData.type === 'fireball') {
+                spawnFireParticles(pos, f.mesh.id, scale);
+              } else if (f.mesh.userData.type === 'iceball') {
+                spawnIceParticles(pos, f.mesh.id, scale);
+              } else if (f.mesh.userData.type === 'lightningball') {
+                spawnLightningParticles(pos, f.mesh.id, scale);
+              }
+            }
+          }
+        }
+      }
       // 실드 우선 판정
       let hit = false;
       if (shieldMesh && player) {
         const shieldBox = new THREE.Box3().setFromObject(shieldMesh);
-        if (shieldBox.containsPoint(f.mesh.position)) {
+        // 실드 충돌 박스를 약간 확장 (더 관대한 방어)
+        const expandAmount = 0.3;
+        shieldBox.expandByScalar(expandAmount);
+        
+        const projectileBox = new THREE.Box3().setFromObject(f.mesh);
+        if (shieldBox.intersectsBox(projectileBox)) {
           // 실드 이펙트
           spawnExplosionParticles(f.mesh.position, 0x33ccff, 0x99e6ff);
           scene.remove(f.mesh);
@@ -1658,7 +2619,12 @@ function animate() {
       }
       if (!hit && player) {
         const playerBox = new THREE.Box3().setFromObject(player);
-        if (playerBox.containsPoint(f.mesh.position)) {
+        // 플레이어 충돌 박스를 약간 확장 (더 관대한 판정)
+        const expandAmount = 0.5;
+        playerBox.expandByScalar(expandAmount);
+        
+        const projectileBox = new THREE.Box3().setFromObject(f.mesh);
+        if (playerBox.intersectsBox(projectileBox)) {
           damagePlayer(15, f.mesh.position);
           spawnExplosionParticles(f.mesh.position, 0xff5500, 0xff2200);
           scene.remove(f.mesh);
@@ -1676,7 +2642,7 @@ function animate() {
     if (boss && player && !isPlayerDead) {
       bossAttackTimer += renderer.xr.isPresenting ? 1/72 : 1/60;
       if (bossAttackTimer > bossAttackInterval) {
-        spawnBossFireball();
+        spawnBossMagic();
         bossAttackTimer = 0;
         bossAttackInterval = 1.2 + Math.random() * 1.6; // 다음 간격(1.2~2.8초)
       }
@@ -1696,6 +2662,29 @@ function animate() {
       renderer.setClearColor(0xff0033, Math.min(1, playerHitFlash * 6));
       if (playerHitFlash <= 0) {
         renderer.setClearColor(0x18132a, 1);
+      }
+    }
+    // === 드래곤(보스) 랜덤 이동 ===
+    if (boss) {
+      // 목표 위치가 없거나, 타이머가 끝나면 새 목표 위치 설정
+      if (!bossMoveTarget || bossMoveTimer <= 0) {
+        const range = 30; // 이동 범위
+        const minY = 15, maxY = 18; // 하늘 높이
+        bossMoveTarget = new THREE.Vector3(
+          (Math.random() - 0.5) * 2 * range,
+          minY + Math.random() * (maxY - minY),
+          (Math.random() - 0.5) * 2 * range
+        );
+        bossMoveTimer = 2.5 + Math.random() * 2.5; // 2.5~5초마다 목표 변경
+      }
+      // 현재 위치에서 목표 위치로 부드럽게 이동
+      const moveSpeed = 0.04; // 1프레임당 이동 비율
+      boss.position.lerp(bossMoveTarget, moveSpeed);
+      bossMoveTimer -= (renderer.xr.isPresenting ? 1/72 : 1/60);
+      // 이동 직후에만 바라보게!
+      if (boss && player) {
+        boss.lookAt(player.position.x, boss.position.y, player.position.z);
+        boss.rotateY(Math.PI); // Y축 180도 회전
       }
     }
   });
@@ -1727,7 +2716,19 @@ function animate() {
     if (moveRight) moveDir.add(right);
     moveDir.normalize();
     // 기존 속도와 delta를 곱해 너무 빠르지 않게 조정 (speed * delta * 0.5 등으로 조절)
-    player.position.add(moveDir.multiplyScalar(speed * delta * 0.2)); // 더 느리게
+    const movement = moveDir.multiplyScalar(speed * delta * 0.2);
+    const newPos = player.position.clone().add(movement);
+    
+    // 맵 경계 제한 (landscape 기준)
+    if (landscape) {
+      const box = new THREE.Box3().setFromObject(landscape);
+      const margin = 2; // 경계에서 약간 떨어진 거리
+      newPos.x = Math.max(box.min.x + margin, Math.min(box.max.x - margin, newPos.x));
+      newPos.z = Math.max(box.min.z + margin, Math.min(box.max.z - margin, newPos.z));
+    }
+    
+    player.position.copy(newPos);
+    
     // 중력 적용
     velocityY -= gravity * delta;
     player.position.y += velocityY * delta;
@@ -1773,6 +2774,14 @@ function animate() {
   updateBlinkMagic();
   updateAuroraMagic();
   updateHandAuroraEffects();
+  
+  // 보스 등장 시퀀스 업데이트
+  updateBossSpawnEffects();
+  updatePortalParticles();
+  
+  // TWEEN 업데이트
+  if (TWEEN) TWEEN.update();
+  
   renderer.render(scene, camera);
 
   // === 실드: 양손 모두 Open Palm일 때만 표시 ===
@@ -1866,9 +2875,10 @@ function triggerBlinkTeleport() {
   let x, y, z;
   if (landscape) {
     const box = new THREE.Box3().setFromObject(landscape);
+    const margin = 5; // 경계에서 더 멀리 떨어진 거리
     for (let attempt = 0; attempt < 20; attempt++) {
-      x = box.min.x + Math.random() * (box.max.x - box.min.x);
-      z = box.min.z + Math.random() * (box.max.z - box.min.z);
+      x = (box.min.x + margin) + Math.random() * ((box.max.x - margin) - (box.min.x + margin));
+      z = (box.min.z + margin) + Math.random() * ((box.max.z - margin) - (box.min.z + margin));
       // Raycaster로 해당 (x, z) 위치의 땅 높이(y) 구하기
       const rayOrigin = new THREE.Vector3(x, 1000, z);
       const raycaster = new THREE.Raycaster(rayOrigin, new THREE.Vector3(0, -1, 0));
@@ -1890,22 +2900,28 @@ function triggerBlinkTeleport() {
       }
     }
   }
-  // 못 찾으면 기존 보스 주변 랜덤 위치 fallback
-  if (!found && boss) {
+  // 못 찾으면 기존 보스 주변 랜덤 위치 fallback (맵 경계 내에서)
+  if (!found && boss && landscape) {
     const center = new THREE.Vector3();
     boss.getWorldPosition(center);
+    const box = new THREE.Box3().setFromObject(landscape);
+    const margin = 5;
+    
     const theta = Math.random() * Math.PI * 2;
     const radius = 7 + Math.random() * 4;
     x = center.x + Math.cos(theta) * radius;
     z = center.z + Math.sin(theta) * radius;
+    
+    // 맵 경계 내로 제한
+    x = Math.max(box.min.x + margin, Math.min(box.max.x - margin, x));
+    z = Math.max(box.min.z + margin, Math.min(box.max.z - margin, z));
+    
     y = center.y + 1.5;
-    if (landscape) {
-      const rayOrigin = new THREE.Vector3(x, 1000, z);
-      const raycaster = new THREE.Raycaster(rayOrigin, new THREE.Vector3(0, -1, 0));
-      const intersects = raycaster.intersectObject(landscape, true);
-      if (intersects.length > 0) {
-        y = intersects[0].point.y + 1.5;
-      }
+    const rayOrigin = new THREE.Vector3(x, 1000, z);
+    const raycaster = new THREE.Raycaster(rayOrigin, new THREE.Vector3(0, -1, 0));
+    const intersects = raycaster.intersectObject(landscape, true);
+    if (intersects.length > 0) {
+      y = intersects[0].point.y + 1.5;
     }
   }
   // 카메라 번쩍임 효과
@@ -2214,9 +3230,7 @@ function createSmallAuroraEffectMesh(pos) {
 // Mediapipe 랜드마크 시각화용 함수 (CDN)
 // import { drawConnectors, drawLandmarks, HAND_CONNECTIONS } from 'https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js';
 
-// 진입점
-init();
-animate();
+// 진입점 - 메뉴에서 시작하므로 init/animate 직접 호출 제거
 
 // createBigAuroraBall를 createFireball 등과 같은 위치(상단)로 이동
 function createBigAuroraBall(pos, scale) {
@@ -2282,23 +3296,283 @@ function tryRemoveShield() {
   }
 }
 
-// === [보스 마법 공격: 플레이어 향해 파이어볼 발사] ===
+// === [보스 마법 공격: 플레이어 향해 마법 발사] ===
 let bossAttackTimer = 0;
 let bossAttackInterval = 2.0 + Math.random() * 0.8; // 최초 간격(1.2~2.8)
 let bossProjectiles = [];
 
-function spawnBossFireball() {
+// 보스가 사용할 수 있는 마법 종류(실드, 오로라볼 제외)
+const bossMagicTypes = [
+  { type: 'fireball', create: createFireball, color: 0xff5500, emissive: 0xff2200 },
+  { type: 'iceball', create: createIceball, color: 0x99e6ff, emissive: 0x66ccff },
+  { type: 'lightningball', create: createLightningBall, color: 0xffff99, emissive: 0x99e6ff }
+];
+
+function spawnBossMagic() {
   if (!boss || isPlayerDead) return;
-  // 보스 위치에서 플레이어 위치로 향하는 파이어볼
-  const start = new THREE.Vector3();
-  boss.getWorldPosition(start);
+  // 랜덤 마법 선택
+  const magic = bossMagicTypes[Math.floor(Math.random() * bossMagicTypes.length)];
+  // 드래곤 머리 앞 위치 계산
+  const bossWorldPos = new THREE.Vector3();
+  boss.getWorldPosition(bossWorldPos);
+  bossBox.setFromObject(boss);
+  const headY = bossBox.max.y + boss.scale.y * 1.2; // 더 위로
+  const headPos = new THREE.Vector3(bossWorldPos.x, headY, bossWorldPos.z);
+  const lookDir = new THREE.Vector3();
+  boss.getWorldDirection(lookDir);
+  // 마법 생성 위치: 드래곤 머리 위에서 더 위, lookDir 방향
+  const magicStart = headPos.add(lookDir.multiplyScalar(2 * (boss.scale.x || 1)));
   const end = player.position.clone();
-  const dir = end.clone().sub(start).normalize();
-  const fireball = createFireball(start.clone().add(dir.clone().multiplyScalar(3)));
-  fireball.mesh.material.color.set(0xff5500);
-  fireball.mesh.material.emissive.set(0xff2200);
-  fireball.mesh.scale.set(1.2, 1.2, 1.2);
-  fireball.velocity = dir.multiplyScalar(1.2); // [속도 상향: 1.2]
-  fireball.isBossProjectile = true;
-  bossProjectiles.push(fireball);
+  const dir = end.clone().sub(magicStart).normalize();
+  const projectile = magic.create(magicStart);
+  // 색상/이펙트 적용
+  if (projectile.mesh.material.color) projectile.mesh.material.color.set(magic.color);
+  if (projectile.mesh.material.emissive) projectile.mesh.material.emissive.set(magic.emissive);
+  projectile.mesh.userData.type = magic.type;
+  const scale = (boss.scale.x || 1) * 4;
+  projectile.mesh.scale.set(scale, scale, scale);
+  projectile._delayedVelocity = dir.multiplyScalar(0.6 * (boss.scale.x || 1));
+  projectile.velocity = new THREE.Vector3(0, 0, 0);
+  projectile._delayTimer = 0.4;
+  projectile.isBossProjectile = true;
+  projectile._attachedToBoss = true; // 대기 중에는 드래곤 머리 위치를 따라감
+  bossProjectiles.push(projectile);
+  // 파티클 생성은 animate 루프에서만 처리 (중복 방지)
 }
+
+// === 마인크래프트 스타일 파란색 큐브맵 하늘 ===
+function createSolidColorCubeTexture(color = 0x7ec0ee) {
+  // color: 0x7ec0ee (마인크래프트 하늘색)
+  const r = (color >> 16) & 0xff;
+  const g = (color >> 8) & 0xff;
+  const b = color & 0xff;
+  const data = new Uint8Array([r, g, b, 255]); // RGBA
+  const skyTexture = new THREE.DataTexture(data, 1, 1, THREE.RGBAFormat);
+  skyTexture.needsUpdate = true;
+  // 6면 모두 같은 텍스처로 큐브맵 생성
+  const skybox = new THREE.CubeTexture([skyTexture, skyTexture, skyTexture, skyTexture, skyTexture, skyTexture]);
+  skybox.needsUpdate = true;
+  return skybox;
+}
+
+// 게임 초기화 상태 플래그
+let gameInitialized = false;
+let bossSpawnTimeout = null;
+
+// 진입점에서 바로 init/animate 호출하지 않고, startGame() 함수로 분리
+function startGame() {
+  const menu = document.getElementById('main-menu');
+  if (menu) menu.style.display = 'none';
+  
+  // 게임이 처음 시작되는 경우에만 init() 호출
+  if (!gameInitialized) {
+    init();
+    animate();
+    gameInitialized = true;
+  } else {
+    // 이미 초기화된 경우 게임 상태만 리셋
+    resetGameState();
+  }
+  
+  // 기존 타이머 취소
+  if (bossSpawnTimeout) {
+    clearTimeout(bossSpawnTimeout);
+  }
+  
+  // 게임 시작 후 3초 뒤에 보스 등장 시퀀스 시작
+  bossSpawnTimeout = setTimeout(() => {
+    startBossSpawnSequence();
+    bossSpawnTimeout = null;
+  }, 3000);
+}
+
+// 게임 상태 리셋 함수 (init() 없이 게임 상태만 초기화)
+function resetGameState() {
+  // 기존 타이머 취소
+  if (bossSpawnTimeout) {
+    clearTimeout(bossSpawnTimeout);
+    bossSpawnTimeout = null;
+  }
+  
+  // 플레이어 상태 초기화
+  isPlayerDead = false;
+  playerHP = playerMaxHP;
+  updatePlayerHpUI();
+  
+  // 플레이어 위치 초기화
+  if (player && landscape) {
+    player.position.set(0, groundY + 1, 0);
+    camera.position.set(0, groundY + 8, 24);
+    if (controls) {
+      controls.object.position.set(0, groundY + 1.2, 0);
+    }
+  }
+  
+  // 기존 보스 제거
+  if (boss) {
+    scene.remove(boss);
+    boss = null;
+    bossBox = null;
+  }
+  
+  // 보스 HP바 제거
+  if (bossHpBarMesh) {
+    scene.remove(bossHpBarMesh);
+    bossHpBarMesh = null;
+  }
+  if (bossHpBarBgMesh) {
+    scene.remove(bossHpBarBgMesh);
+    bossHpBarBgMesh = null;
+  }
+  
+  // 포털 제거
+  if (bossSpawnPortal) {
+    if (bossSpawnPortal.outerRing) scene.remove(bossSpawnPortal.outerRing);
+    if (bossSpawnPortal.innerRing) scene.remove(bossSpawnPortal.innerRing);
+    if (bossSpawnPortal.core) scene.remove(bossSpawnPortal.core);
+    if (bossSpawnPortal.cylinder) scene.remove(bossSpawnPortal.cylinder);
+    bossSpawnPortal = null;
+  }
+  
+  // 보스 등장 시퀀스 상태 초기화
+  bossSpawnStarted = false;
+  bossSpawnPhase = 'waiting';
+  bossSpawnStartTime = 0;
+  bossSpawnEffects = [];
+  portalParticles = [];
+  
+  // 보스 공격 타이머 초기화
+  bossAttackTimer = 0;
+  bossAttackInterval = 2.0;
+  
+  // 모든 파티클 제거
+  fireballs.forEach(f => scene.remove(f.mesh));
+  iceballs.forEach(f => scene.remove(f.mesh));
+  lightningballs.forEach(f => scene.remove(f.mesh));
+  bossProjectiles.forEach(f => scene.remove(f.mesh));
+  explosionParticles.forEach(p => scene.remove(p.mesh));
+  damageTexts.forEach(t => scene.remove(t.sprite));
+  
+  // 배열 초기화
+  fireballs = [];
+  iceballs = [];
+  lightningballs = [];
+  bossProjectiles = [];
+  explosionParticles = [];
+  damageTexts = [];
+  
+  // 화면 효과 초기화
+  playerHitFlash = 0;
+  playerShakeTime = 0;
+  renderer.setClearColor(0x18132a, 1);
+  
+  // 하늘 색상 초기화
+  const sky = scene.children.find(child => child.geometry && child.geometry.type === 'SphereGeometry');
+  if (sky && sky.material) {
+    sky.material.color.set(0xb3e3ff); // 원래 하늘 색상으로 복원
+  }
+}
+
+// 메뉴 선택 로직
+const menuItems = [
+  { label: '게임시작', action: startGame },
+  { label: '튜토리얼', action: () => alert('튜토리얼 준비중!') },
+  { label: '스코어', action: () => alert('스코어 준비중!') },
+  { label: '제작자', action: () => alert('제작자: YourName') },
+];
+let selectedMenuIdx = 0;
+
+// 게임 오버 메뉴 선택 로직
+const gameOverMenuItems = [
+  { label: '다시 시작', action: restartGame },
+  { label: '메인 메뉴', action: returnToMainMenu },
+];
+let selectedGameOverMenuIdx = 0;
+
+function renderMenuSelection() {
+  const items = document.querySelectorAll('.mc-menu-item');
+  items.forEach((el, i) => {
+    if (i === selectedMenuIdx) {
+      el.classList.add('selected');
+      el.innerHTML = menuItems[i].label;
+    } else {
+      el.classList.remove('selected');
+      el.innerHTML = menuItems[i].label;
+    }
+  });
+}
+
+function renderGameOverMenuSelection() {
+  const items = document.querySelectorAll('.mc-gameover-item');
+  items.forEach((el, i) => {
+    if (i === selectedGameOverMenuIdx) {
+      el.classList.add('selected');
+      el.innerHTML = gameOverMenuItems[i].label;
+    } else {
+      el.classList.remove('selected');
+      el.innerHTML = gameOverMenuItems[i].label;
+    }
+  });
+}
+
+function handleMenuKey(e) {
+  const mainMenu = document.getElementById('main-menu');
+  const gameOverScreen = document.getElementById('game-over-screen');
+  
+  // 메인 메뉴가 활성화된 경우
+  if (mainMenu && mainMenu.style.display !== 'none') {
+    if (e.key === 'ArrowUp') {
+      selectedMenuIdx = (selectedMenuIdx - 1 + menuItems.length) % menuItems.length;
+      renderMenuSelection();
+      e.preventDefault();
+    } else if (e.key === 'ArrowDown') {
+      selectedMenuIdx = (selectedMenuIdx + 1) % menuItems.length;
+      renderMenuSelection();
+      e.preventDefault();
+    } else if (e.key === 'Enter') {
+      menuItems[selectedMenuIdx].action();
+      e.preventDefault();
+    }
+  }
+  
+  // 게임 오버 화면이 활성화된 경우
+  if (gameOverScreen && gameOverScreen.style.display !== 'none') {
+    if (e.key === 'ArrowUp') {
+      selectedGameOverMenuIdx = (selectedGameOverMenuIdx - 1 + gameOverMenuItems.length) % gameOverMenuItems.length;
+      renderGameOverMenuSelection();
+      e.preventDefault();
+    } else if (e.key === 'ArrowDown') {
+      selectedGameOverMenuIdx = (selectedGameOverMenuIdx + 1) % gameOverMenuItems.length;
+      renderGameOverMenuSelection();
+      e.preventDefault();
+    } else if (e.key === 'Enter') {
+      gameOverMenuItems[selectedGameOverMenuIdx].action();
+      e.preventDefault();
+    }
+  }
+}
+
+document.addEventListener('DOMContentLoaded', () => {
+  // 메뉴 클릭 이벤트
+  document.querySelectorAll('.mc-menu-item').forEach((el, i) => {
+    el.addEventListener('click', () => {
+      selectedMenuIdx = i;
+      renderMenuSelection();
+      menuItems[i].action();
+    });
+  });
+  
+  // 게임 오버 메뉴 클릭 이벤트
+  document.querySelectorAll('.mc-gameover-item').forEach((el, i) => {
+    el.addEventListener('click', () => {
+      selectedGameOverMenuIdx = i;
+      renderGameOverMenuSelection();
+      gameOverMenuItems[i].action();
+    });
+  });
+  
+  // 키보드 이벤트
+  document.addEventListener('keydown', handleMenuKey);
+  renderMenuSelection();
+  renderGameOverMenuSelection();
+});
